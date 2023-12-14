@@ -230,26 +230,27 @@ public sealed partial class NtfsReader : IDisposable
     /// <summary>
     /// Add some functionality to the basic stream
     /// </summary>
-    private sealed class FragmentWrapper(StreamWrapper owner, Fragment fragment) : IFragment
+    private struct FragmentWrapper( Fragment fragment) : IFragment
     {
-        public ulong Lcn => fragment.Lcn;
-        public ulong NextVcn => fragment.NextVcn;
+        public readonly ulong Lcn => fragment.Lcn;
+
+        public readonly ulong NextVcn => fragment.NextVcn;
     }
 
     /// <summary>
     /// Add some functionality to the basic stream
     /// </summary>
-    private sealed class StreamWrapper(NtfsReader reader, NodeWrapper parentNode, int streamIndex) : IStream
+    private struct StreamWrapper(NtfsReader reader, NodeWrapper parentNode, int streamIndex) : IStream
     {
-        public string Name
+        public readonly string Name
             => reader.GetNameFromIndex(reader._streams[parentNode.NodeIndex][streamIndex].NameIndex);
 
-        public ulong Size
+        public readonly ulong Size
             => reader._streams[parentNode.NodeIndex][streamIndex].Size;
 
-        public IList<IFragment> Fragments
+        public readonly IList<IFragment> Fragments
         {
-            get 
+            get
             {
                 if (!reader._retrieveMode.HasFlag(RetrieveMode.Fragments))
                     throw new InvalidOperationException("The fragments haven't been retrieved. Make sure to use the proper RetrieveMode.");
@@ -261,8 +262,9 @@ public sealed partial class NtfsReader : IDisposable
                     return null;
 
                 var newFragments = new List<IFragment>();
+
                 foreach (Fragment fragment in fragments)
-                    newFragments.Add(new FragmentWrapper(this, fragment));
+                    newFragments.Add(new FragmentWrapper(fragment));
 
                 return newFragments;
             }
@@ -272,23 +274,23 @@ public sealed partial class NtfsReader : IDisposable
     /// <summary>
     /// Add some functionality to the basic node
     /// </summary>
-    private sealed class NodeWrapper(NtfsReader reader, uint nodeIndex, Node node) : INode
+    private struct NodeWrapper(NtfsReader reader, uint nodeIndex, Node node) : INode
     {
         string _fullName;
 
-        public uint NodeIndex => nodeIndex;
+        public readonly uint NodeIndex => nodeIndex;
 
-        public uint ParentNodeIndex => node.ParentNodeIndex;
+        public readonly uint ParentNodeIndex => node.ParentNodeIndex;
 
-        public Attributes Attributes => node.Attributes;
+        public readonly Attributes Attributes => node.Attributes;
 
-        public string Name => reader.GetNameFromIndex(node.NameIndex);
+        public readonly string Name => reader.GetNameFromIndex(node.NameIndex);
 
-        public ulong Size => node.Size;
+        public readonly ulong Size => node.Size;
 
         public string FullName => _fullName ??= reader.GetNodeFullNameCore(nodeIndex);
 
-        public IList<IStream> Streams
+        public readonly IList<IStream> Streams
         {
             get 
             {
@@ -308,9 +310,9 @@ public sealed partial class NtfsReader : IDisposable
             }
         }
 
-        public DateTime CreationTime
+        public readonly DateTime CreationTime
         {
-            get 
+            get
             {
                 if (reader._standardInformations == null)
                     throw new NotSupportedException("The StandardInformation haven't been retrieved. Make sure to use the proper RetrieveMode.");
@@ -319,9 +321,9 @@ public sealed partial class NtfsReader : IDisposable
             }
         }
 
-        public DateTime LastChangeTime
+        public readonly DateTime LastChangeTime
         {
-            get 
+            get
             {
                 if (reader._standardInformations == null)
                     throw new NotSupportedException("The StandardInformation haven't been retrieved. Make sure to use the proper RetrieveMode.");
@@ -330,9 +332,9 @@ public sealed partial class NtfsReader : IDisposable
             }
         }
 
-        public DateTime LastAccessTime
+        public readonly DateTime LastAccessTime
         {
-            get 
+            get
             {
                 if (reader._standardInformations == null)
                     throw new NotSupportedException("The StandardInformation haven't been retrieved. Make sure to use the proper RetrieveMode.");
@@ -1246,7 +1248,7 @@ public sealed partial class NtfsReader : IDisposable
                 nodes[nodeIndex] = newNode;
 
                 if (streams != null)
-                    _streams[nodeIndex] = streams.ToArray();
+                    _streams[nodeIndex] = [.. streams];
             }
 
             return nodes;
