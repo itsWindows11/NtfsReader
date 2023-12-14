@@ -9,7 +9,7 @@ public partial class NtfsReader
     /// Recurse the node hierarchy and construct its entire name
     /// stopping at the root directory.
     /// </summary>
-    private string GetNodeFullNameCore(uint nodeIndex)
+    internal string GetNodeFullNameCore(uint nodeIndex)
     {
         uint node = nodeIndex;
 

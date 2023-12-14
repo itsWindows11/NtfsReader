@@ -1,400 +1,25 @@
 ﻿using System.Collections.Generic;
-using System.Runtime.InteropServices;
+using System.Linq;
 using Microsoft.Win32.SafeHandles;
-using System.Diagnostics;
 
 namespace System.IO.Filesystem.Ntfs;
 
 public sealed partial class NtfsReader : IDisposable
 {
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private unsafe struct BootSector
-    {
-        fixed byte AlignmentOrReserved1[3];
-        public ulong Signature;
-        public ushort BytesPerSector;
-        public byte SectorsPerCluster;
-        fixed byte AlignmentOrReserved2[26];
-        public ulong TotalSectors;
-        public ulong MftStartLcn;
-        public ulong Mft2StartLcn;
-        public uint ClustersPerMftRecord;
-        public uint ClustersPerIndexRecord;
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct VolumeData
-    {
-        public ulong VolumeSerialNumber;
-        public ulong NumberSectors;
-        public ulong TotalClusters;
-        public ulong FreeClusters;
-        public ulong TotalReserved;
-        public uint BytesPerSector;
-        public uint BytesPerCluster;
-        public uint BytesPerFileRecordSegment;
-        public uint ClustersPerFileRecordSegment;
-        public ulong MftValidDataLength;
-        public ulong MftStartLcn;
-        public ulong Mft2StartLcn;
-        public ulong MftZoneStart;
-        public ulong MftZoneEnd;
-    }
-
-    private enum RecordType : uint
-    {
-        File = 0x454c4946,  //'FILE' in ASCII
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct RecordHeader
-    {
-        public RecordType Type;                  /* File type, for example 'FILE' */
-        public ushort UsaOffset;             /* Offset to the Update Sequence Array */
-        public ushort UsaCount;              /* Size in words of Update Sequence Array */
-        public ulong Lsn;                   /* $LogFile Sequence Number (LSN) */
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct INodeReference
-    {
-        public uint InodeNumberLowPart;
-        public ushort InodeNumberHighPart;
-        public ushort SequenceNumber;
-    };
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct FileRecordHeader
-    {
-        public RecordHeader RecordHeader;
-        public ushort SequenceNumber;        /* Sequence number */
-        public ushort LinkCount;             /* Hard link count */
-        public ushort AttributeOffset;       /* Offset to the first Attribute */
-        public ushort Flags;                 /* Flags. bit 1 = in use, bit 2 = directory, bit 4 & 8 = unknown. */
-        public uint BytesInUse;             /* Real size of the FILE record */
-        public uint BytesAllocated;         /* Allocated size of the FILE record */
-        public INodeReference BaseFileRecord;     /* File reference to the base FILE record */
-        public ushort NextAttributeNumber;   /* Next Attribute Id */
-        public ushort Padding;               /* Align to 4 UCHAR boundary (XP) */
-        public uint MFTRecordNumber;        /* Number of this MFT Record (XP) */
-        public ushort UpdateSeqNum;          /*  */
-    };
-
-    private enum AttributeType : uint
-    {
-        AttributeInvalid = 0x00,         /* Not defined by Windows */
-        AttributeStandardInformation = 0x10,
-        AttributeAttributeList = 0x20,
-        AttributeFileName = 0x30,
-        AttributeObjectId = 0x40,
-        AttributeSecurityDescriptor = 0x50,
-        AttributeVolumeName = 0x60,
-        AttributeVolumeInformation = 0x70,
-        AttributeData = 0x80,
-        AttributeIndexRoot = 0x90,
-        AttributeIndexAllocation = 0xA0,
-        AttributeBitmap = 0xB0,
-        AttributeReparsePoint = 0xC0,         /* Reparse Point = Symbolic link */
-        AttributeEAInformation = 0xD0,
-        AttributeEA = 0xE0,
-        AttributePropertySet = 0xF0,
-        AttributeLoggedUtilityStream = 0x100
-    };
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct Attribute
-    {
-        public AttributeType AttributeType;
-        public uint Length;
-        public byte Nonresident;
-        public byte NameLength;
-        public ushort NameOffset;
-        public ushort Flags;              /* 0x0001 = Compressed, 0x4000 = Encrypted, 0x8000 = Sparse */
-        public ushort AttributeNumber;
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private unsafe struct AttributeList
-    {
-        public AttributeType AttributeType;
-        public ushort Length;
-        public byte NameLength;
-        public byte NameOffset;
-        public ulong LowestVcn;
-        public INodeReference FileReferenceNumber;
-        public ushort Instance;
-        public fixed ushort AlignmentOrReserved[3];
-    };
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct AttributeFileName
-    {
-        public INodeReference ParentDirectory;
-        public ulong CreationTime;
-        public ulong ChangeTime;
-        public ulong LastWriteTime;
-        public ulong LastAccessTime;
-        public ulong AllocatedSize;
-        public ulong DataSize;
-        public uint FileAttributes;
-        public uint AlignmentOrReserved;
-        public byte NameLength;
-        public byte NameType;                 /* NTFS=0x01, DOS=0x02 */
-        public char Name;
-    };
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct AttributeStandardInformation
-    {
-        public ulong CreationTime;
-        public ulong FileChangeTime;
-        public ulong MftChangeTime;
-        public ulong LastAccessTime;
-        public uint FileAttributes;       /* READ_ONLY=0x01, HIDDEN=0x02, SYSTEM=0x04, VOLUME_ID=0x08, ARCHIVE=0x20, DEVICE=0x40 */
-        public uint MaximumVersions;
-        public uint VersionNumber;
-        public uint ClassId;
-        public uint OwnerId;                        // NTFS 3.0 only
-        public uint SecurityId;                     // NTFS 3.0 only
-        public ulong QuotaCharge;                // NTFS 3.0 only
-        public ulong Usn;                              // NTFS 3.0 only
-    };
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct ResidentAttribute
-    {
-        public Attribute Attribute;
-        public uint ValueLength;
-        public ushort ValueOffset;
-        public ushort Flags;               // 0x0001 = Indexed
-    };
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private unsafe struct NonResidentAttribute
-    {
-        public Attribute Attribute;
-        public ulong StartingVcn;
-        public ulong LastVcn;
-        public ushort RunArrayOffset;
-        public byte CompressionUnit;
-        public fixed byte AlignmentOrReserved[5];
-        public ulong AllocatedSize;
-        public ulong DataSize;
-        public ulong InitializedSize;
-        public ulong CompressedSize;    // Only when compressed
-    };
-
-    [StructLayout(LayoutKind.Sequential, Pack = 1)]
-    private struct Fragment(ulong lcn, ulong nextVcn)
-    {
-        public ulong Lcn = lcn;                // Logical cluster number, location on disk.
-        public ulong NextVcn = nextVcn;            // Virtual cluster number of next fragment.
-    }
-
-    private sealed class Stream(int nameIndex, AttributeType type, ulong size)
-    {
-        public ulong Clusters;                      // Total number of clusters.
-        public ulong Size = size;                          // Total number of bytes.
-        public AttributeType Type = type;
-        public int NameIndex = nameIndex;
-        public List<Fragment> _fragments;
-
-        public List<Fragment> Fragments
-            => _fragments ??= new List<Fragment>(5);
-    }
-
-    /// <summary>
-    /// Node struct for file and directory entries
-    /// </summary>
-    /// <remarks>
-    /// We keep this as small as possible to reduce footprint for large volume.
-    /// </remarks>
-    private struct Node
-    {
-        public Attributes Attributes;
-        public uint ParentNodeIndex;
-        public ulong Size;
-        public int NameIndex;
-    }
-
-    /// <summary>
-    /// Contains extra information not required for basic purposes.
-    /// </summary>
-    private struct StandardInformation(ulong creationTime, ulong lastAccessTime, ulong lastChangeTime)
-    {
-        public ulong CreationTime = creationTime;
-        public ulong LastAccessTime = lastAccessTime;
-        public ulong LastChangeTime = lastChangeTime;
-    }
-
-    /// <summary>
-    /// Add some functionality to the basic stream
-    /// </summary>
-    private struct FragmentWrapper( Fragment fragment) : IFragment
-    {
-        public readonly ulong Lcn => fragment.Lcn;
-
-        public readonly ulong NextVcn => fragment.NextVcn;
-    }
-
-    /// <summary>
-    /// Add some functionality to the basic stream
-    /// </summary>
-    private struct StreamWrapper(NtfsReader reader, NodeWrapper parentNode, int streamIndex) : IStream
-    {
-        public readonly string Name
-            => reader.GetNameFromIndex(reader._streams[parentNode.NodeIndex][streamIndex].NameIndex);
-
-        public readonly ulong Size
-            => reader._streams[parentNode.NodeIndex][streamIndex].Size;
-
-        public readonly IList<IFragment> Fragments
-        {
-            get
-            {
-                if (!reader._retrieveMode.HasFlag(RetrieveMode.Fragments))
-                    throw new InvalidOperationException("The fragments haven't been retrieved. Make sure to use the proper RetrieveMode.");
-
-                IList<Fragment> fragments =
-                    reader._streams[parentNode.NodeIndex][streamIndex].Fragments;
-
-                if (fragments == null || fragments.Count == 0)
-                    return null;
-
-                var newFragments = new List<IFragment>();
-
-                foreach (Fragment fragment in fragments)
-                    newFragments.Add(new FragmentWrapper(fragment));
-
-                return newFragments;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Add some functionality to the basic node
-    /// </summary>
-    private struct NodeWrapper(NtfsReader reader, uint nodeIndex, Node node) : INode
-    {
-        string _fullName;
-
-        public readonly uint NodeIndex => nodeIndex;
-
-        public readonly uint ParentNodeIndex => node.ParentNodeIndex;
-
-        public readonly Attributes Attributes => node.Attributes;
-
-        public readonly string Name => reader.GetNameFromIndex(node.NameIndex);
-
-        public readonly ulong Size => node.Size;
-
-        public string FullName => _fullName ??= reader.GetNodeFullNameCore(nodeIndex);
-
-        public readonly IList<IStream> Streams
-        {
-            get 
-            {
-                if (reader._streams == null)
-                    throw new InvalidOperationException("The streams haven't been retrieved. Make sure to use the proper RetrieveMode.");
-
-                Stream[] streams = reader._streams[nodeIndex];
-                if (streams == null)
-                    return null;
-
-                var newStreams = new List<IStream>();
-
-                for (int i = 0; i < streams.Length; ++i)
-                    newStreams.Add(new StreamWrapper(reader, this, i));
-
-                return newStreams;
-            }
-        }
-
-        public readonly DateTime CreationTime
-        {
-            get
-            {
-                if (reader._standardInformations == null)
-                    throw new NotSupportedException("The StandardInformation haven't been retrieved. Make sure to use the proper RetrieveMode.");
-
-                return DateTime.FromFileTimeUtc((long)reader._standardInformations[nodeIndex].CreationTime);
-            }
-        }
-
-        public readonly DateTime LastChangeTime
-        {
-            get
-            {
-                if (reader._standardInformations == null)
-                    throw new NotSupportedException("The StandardInformation haven't been retrieved. Make sure to use the proper RetrieveMode.");
-
-                return DateTime.FromFileTimeUtc((long)reader._standardInformations[nodeIndex].LastChangeTime);
-            }
-        }
-
-        public readonly DateTime LastAccessTime
-        {
-            get
-            {
-                if (reader._standardInformations == null)
-                    throw new NotSupportedException("The StandardInformation haven't been retrieved. Make sure to use the proper RetrieveMode.");
-
-                return DateTime.FromFileTimeUtc((long)reader._standardInformations[nodeIndex].LastAccessTime);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Simple structure of available disk informations.
-    /// </summary>
-    private sealed class DiskInfoWrapper : IDiskInfo
-    {
-        public ushort BytesPerSector;
-        public byte SectorsPerCluster;
-        public ulong TotalSectors;
-        public ulong MftStartLcn;
-        public ulong Mft2StartLcn;
-        public uint ClustersPerMftRecord;
-        public uint ClustersPerIndexRecord;
-        public ulong BytesPerMftRecord;
-        public ulong BytesPerCluster;
-        public ulong TotalClusters;
-
-        ushort IDiskInfo.BytesPerSector => BytesPerSector;
-
-        byte IDiskInfo.SectorsPerCluster => SectorsPerCluster;
-
-        ulong IDiskInfo.TotalSectors => TotalSectors;
-
-        ulong IDiskInfo.MftStartLcn => MftStartLcn;
-
-        ulong IDiskInfo.Mft2StartLcn => Mft2StartLcn;
-
-        uint IDiskInfo.ClustersPerMftRecord => ClustersPerMftRecord;
-
-        uint IDiskInfo.ClustersPerIndexRecord => ClustersPerIndexRecord;
-
-        ulong IDiskInfo.BytesPerMftRecord => BytesPerMftRecord;
-
-        ulong IDiskInfo.BytesPerCluster => BytesPerCluster;
-
-        ulong IDiskInfo.TotalClusters => TotalClusters;
-    }
-
     private const ulong VIRTUALFRAGMENT = ulong.MaxValue;
     private const uint ROOTDIRECTORY = 5;
 
     private readonly byte[] BitmapMasks = [1, 2, 4, 8, 16, 32, 64, 128];
 
-    SafeFileHandle _volumeHandle;
-    DiskInfoWrapper _diskInfo;
-    Node[] _nodes;
-    StandardInformation[] _standardInformations;
-    Stream[][] _streams;
-    DriveInfo _driveInfo;
-    List<string> _names = [];
-    RetrieveMode _retrieveMode;
-    byte[] _bitmapData;
+    internal SafeFileHandle _volumeHandle;
+    internal DiskInfoWrapper _diskInfo;
+    internal Node[] _nodes;
+    internal StandardInformation[] _standardInformations;
+    internal Stream[][] _streams;
+    internal DriveInfo _driveInfo;
+    internal List<string> _names = [];
+    internal RetrieveMode _retrieveMode;
+    internal byte[] _bitmapData;
 
     //preallocate a lot of space for the strings to avoid too much dictionary resizing
     //use ordinal comparison to improve performance
@@ -429,31 +54,14 @@ public sealed partial class NtfsReader : IDisposable
     /// <summary>
     /// Get the string from our stringtable from the given index.
     /// </summary>
-    private string GetNameFromIndex(int nameIndex)
-    {
-        return nameIndex == 0 ? null : _names[nameIndex];
-    }
+    internal string GetNameFromIndex(int nameIndex)
+        => nameIndex == 0 ? null : _names[nameIndex];
 
-    private Stream SearchStream(List<Stream> streams, AttributeType streamType)
-    {
-        //since the number of stream is usually small, we can afford O(n)
-        foreach (Stream stream in streams)
-            if (stream.Type == streamType)
-                return stream;
+    internal Stream SearchStream(List<Stream> streams, AttributeType streamType)
+        => streams.FirstOrDefault(s => s.Type == streamType);
 
-        return null;
-    }
-
-    private Stream SearchStream(List<Stream> streams, AttributeType streamType, int streamNameIndex)
-    {
-        //since the number of stream is usually small, we can afford O(n)
-        foreach (Stream stream in streams)
-            if (stream.Type == streamType &&
-                stream.NameIndex == streamNameIndex)
-                return stream;
-
-        return null;
-    }
+    internal Stream SearchStream(List<Stream> streams, AttributeType streamType, int streamNameIndex)
+        => streams.FirstOrDefault(s => s.Type == streamType && s.NameIndex == streamNameIndex);
 
     private unsafe void ReadFile(byte* buffer, int len, ulong absolutePosition) => ReadFile(buffer, (ulong)len, absolutePosition);
 
@@ -1033,7 +641,7 @@ public sealed partial class NtfsReader : IDisposable
             runOffsetSize = ((runData[index] & 0xF0) >> 4);
 
             if (++index >= runDataLength)
-                throw new Exception("Error: datarun is longer than buffer, the MFT may be corrupt.");
+                throw new InvalidOperationException("Error: datarun is longer than buffer, the MFT may be corrupt.");
 
             long runLength = 
                 ProcessRunLength(runData, runDataLength, runLengthSize, ref index);
@@ -1168,7 +776,7 @@ public sealed partial class NtfsReader : IDisposable
                 _standardInformations = new StandardInformation[1]; //allocate some space for $MFT record
 
             if (!ProcessMftRecord(buffer, _diskInfo.BytesPerMftRecord, 0, out Node mftNode, mftStreams, true))
-                throw new Exception("Can't interpret Mft Record");
+                throw new Exception("Can't interpret MFT Record");
 
             //the bitmap data contains all used inodes on the disk
             _bitmapData =
