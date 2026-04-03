@@ -10,12 +10,13 @@ permissions:
 
 jobs:
   test:
-    name: Test (net${{ matrix.tfm }})
-    runs-on: ubuntu-latest
+    name: Test (${{ matrix.os }} / net${{ matrix.tfm }})
+    runs-on: ${{ matrix.os }}
 
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         tfm: ['8.0', '9.0', '10.0']
 
     steps:
