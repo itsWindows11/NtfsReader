@@ -337,6 +337,71 @@ public sealed partial class NtfsReader : IDisposable
     }
 
     /// <summary>
+    /// Scans the attribute list of a raw MFT record buffer for a <b>resident</b>
+    /// <see cref="AttributeType.AttributeBitmap"/> and returns a copy of its embedded data,
+    /// or <see langword="null"/> when none is found.
+    /// </summary>
+    /// <remarks>
+    /// On small or newly-formatted volumes the <c>$BITMAP</c> of the <c>$MFT</c> inode can
+    /// fit entirely within the MFT record itself (resident attribute).  In that case the
+    /// bitmap data must be extracted directly — it has no run-list and therefore cannot be
+    /// read by the regular fragment-walking code in <see cref="ProcessBitmapData"/>.
+    /// </remarks>
+    private static unsafe byte[] TryExtractResidentBitmapData(byte* buffer, ulong recordLen)
+    {
+        FileRecordHeader* header = (FileRecordHeader*)buffer;
+        if (header->AttributeOffset >= recordLen)
+            return null;
+
+        byte* ptr = buffer + header->AttributeOffset;
+        ulong bufLen = recordLen - header->AttributeOffset;
+
+        Attribute* attribute = null;
+        for (uint offset = 0; offset < bufLen; offset += attribute->Length)
+        {
+            attribute = (Attribute*)(ptr + offset);
+
+            if ((offset + 4 <= bufLen) && (*(uint*)attribute == 0xFFFFFFFF))
+                break;
+
+            if ((offset + 4 > bufLen) || attribute->Length < 3 || (offset + attribute->Length > bufLen))
+                break;
+
+            if (attribute->Length == 0)
+                break;
+
+            if (attribute->AttributeType == AttributeType.AttributeBitmap && attribute->Nonresident == 0)
+            {
+                ResidentAttribute* res = (ResidentAttribute*)attribute;
+                byte* data = ptr + offset + res->ValueOffset;
+                uint dataLen = res->ValueLength;
+
+                if (dataLen == 0)
+                    return null;
+
+                byte[] result = new byte[dataLen];
+                for (uint i = 0; i < dataLen; i++)
+                    result[i] = data[i];
+
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Managed-array wrapper around <see cref="TryExtractResidentBitmapData"/> safe to call
+    /// from async methods — the <c>fixed</c> block does not span any <see langword="await"/>
+    /// point.
+    /// </summary>
+    internal static unsafe byte[] TryExtractResidentBitmapDataAt(byte[] buffer, ulong recordLen)
+    {
+        fixed (byte* ptr = buffer)
+            return TryExtractResidentBitmapData(ptr, recordLen);
+    }
+
+    /// <summary>
     /// Read the data that is specified in a RunData list from disk into memory,
     /// skipping the first Offset bytes.
     /// </summary>
@@ -871,9 +936,14 @@ public sealed partial class NtfsReader : IDisposable
             if (!ProcessMftRecord(buffer, _diskInfo.BytesPerMftRecord, 0, out Node mftNode, mftStreams, true))
                 throw new Exception("Can't interpret MFT Record");
 
-            //the bitmap data contains all used inodes on the disk
-            _bitmapData =
-                ProcessBitmapData(mftStreams);
+            // Handle both non-resident (common) and resident (small/new volumes) $MFT bitmap.
+            // On small volumes the $BITMAP attribute can be resident; there is no run-list so
+            // ProcessBitmapData would throw "No Bitmap Data".  Fall back to reading the bytes
+            // directly from the raw MFT record that is still in `buffer`.
+            _bitmapData = SearchStream(mftStreams, AttributeType.AttributeBitmap) != null
+                ? ProcessBitmapData(mftStreams)
+                : TryExtractResidentBitmapData(buffer, _diskInfo.BytesPerMftRecord)
+                  ?? throw new Exception("No Bitmap Data");
 
             OnBitmapDataAvailable();
 

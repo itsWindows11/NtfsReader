@@ -186,8 +186,14 @@ public sealed partial class NtfsReader
         if (!ProcessMftRecordAt(data, 0, _diskInfo.BytesPerMftRecord, 0, out Node mftNode, mftStreams, true))
             throw new Exception("Can't interpret MFT Record");
 
-        // --- Read the MFT bitmap (async). ---
-        _bitmapData = await ProcessBitmapDataAsync(mftStreams, cancellationToken).ConfigureAwait(false);
+        // Handle both non-resident (common) and resident (small/new volumes) $MFT bitmap.
+        // On small volumes the $BITMAP attribute can be resident; there is no run-list so
+        // ProcessBitmapDataAsync would throw "No Bitmap Data".  Fall back to extracting the
+        // bytes directly from the managed byte[] that is still in `data`.
+        _bitmapData = SearchStream(mftStreams, AttributeType.AttributeBitmap) != null
+            ? await ProcessBitmapDataAsync(mftStreams, cancellationToken).ConfigureAwait(false)
+            : TryExtractResidentBitmapDataAt(data, _diskInfo.BytesPerMftRecord)
+              ?? throw new Exception("No Bitmap Data");
 
         OnBitmapDataAvailable();
 
