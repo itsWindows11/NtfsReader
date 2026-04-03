@@ -78,4 +78,4 @@ jobs:
           path: src
 
       - name: Test
-        run: dotnet test --no-build -c Release --framework net${{ matrix.tfm }} --logger "console;verbosity=normal"
+        run: dotnet test --no-build -c Release --framework net${{ matrix.tfm }} --logger "console;verbosity=detailed"
