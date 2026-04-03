@@ -3,7 +3,6 @@ name: Tests
 on:
   push:
     branches: [ main, master, release, 'copilot/**' ]
-  pull_request:
 
 permissions:
   contents: read
