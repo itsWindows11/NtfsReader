@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
@@ -148,18 +149,17 @@ public sealed partial class NtfsReader
     /// </returns>
     public List<INode> GetNodes(string rootPath)
     {
-        var nodes = new List<INode>();
-
-        uint nodeCount = (uint)_nodes.Length;
+        var bag = new ConcurrentBag<INode>();
+        int nodeCount = _nodes.Length;
 
         Parallel.For(0, nodeCount, i =>
         {
             if (_nodes[i].NameIndex != 0
                 && GetNodeFullNameCore((uint)i).StartsWith(rootPath, StringComparison.InvariantCultureIgnoreCase))
-                nodes.Add(new NodeWrapper(this, (uint)i, _nodes[i]));
+                bag.Add(new NodeWrapper(this, (uint)i, _nodes[i]));
         });
 
-        return nodes;
+        return new List<INode>(bag);
     }
 
     /// <summary>

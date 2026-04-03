@@ -1,5 +1,4 @@
 ﻿using System.Collections.Generic;
-using System.Linq;
 using Microsoft.Win32.SafeHandles;
 
 namespace System.IO.Filesystem.Ntfs;
@@ -9,7 +8,7 @@ public sealed partial class NtfsReader : IDisposable
     private const ulong VIRTUALFRAGMENT = ulong.MaxValue;
     private const uint ROOTDIRECTORY = 5;
 
-    private readonly byte[] BitmapMasks = [1, 2, 4, 8, 16, 32, 64, 128];
+    private static readonly byte[] BitmapMasks = [1, 2, 4, 8, 16, 32, 64, 128];
 
     internal SafeFileHandle _volumeHandle;
     internal DiskInfoWrapper _diskInfo;
@@ -65,10 +64,20 @@ public sealed partial class NtfsReader : IDisposable
         => nameIndex == 0 ? null : _names[nameIndex];
 
     internal Stream SearchStream(List<Stream> streams, AttributeType streamType)
-        => streams.FirstOrDefault(s => s.Type == streamType);
+    {
+        for (int i = 0; i < streams.Count; i++)
+            if (streams[i].Type == streamType)
+                return streams[i];
+        return null;
+    }
 
     internal Stream SearchStream(List<Stream> streams, AttributeType streamType, int streamNameIndex)
-        => streams.FirstOrDefault(s => s.Type == streamType && s.NameIndex == streamNameIndex);
+    {
+        for (int i = 0; i < streams.Count; i++)
+            if (streams[i].Type == streamType && streams[i].NameIndex == streamNameIndex)
+                return streams[i];
+        return null;
+    }
 
     private unsafe void ReadFile(byte* buffer, int len, ulong absolutePosition) => ReadFile(buffer, (ulong)len, absolutePosition);
 
