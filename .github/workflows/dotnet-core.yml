@@ -1,34 +1,47 @@
 name: Publish to NuGet
 
+# Triggered automatically when the Tests workflow completes successfully on the
+# release branch.  This guarantees that:
+#   - All tests (Ubuntu + Windows × net8/9/10) have passed.
+#   - The NuGet package is the exact artifact produced during that test run.
 on:
-  push:
-    branches: [ release ]
+  workflow_run:
+    workflows: ["Tests"]
+    types: [completed]
+    branches: [release]
+
+permissions:
+  contents: read
+  actions: read   # needed to download artifacts from the triggering workflow run
 
 jobs:
-  build:
-
+  publish:
+    name: Publish to NuGet
     runs-on: ubuntu-latest
+    # Only run if the triggering Tests workflow actually succeeded.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
 
     steps:
-    - uses: actions/checkout@v3
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: 8
-    - name: Install dependencies
-      run: dotnet restore
-    - name: Build
-      run: dotnet build --configuration Release --no-restore
-    - name: Publish NuGet
-      # You may pin to the exact commit or the version.
-      # uses: brandedoutcast/publish-nuget@c12b8546b67672ee38ac87bea491ac94a587f7cc
-      uses: brandedoutcast/publish-nuget@v2.5.5
-      with:
-        # Filepath of the project to be packaged, relative to root of repository
-        PROJECT_FILE_PATH: src/NtfsReader/NtfsReader.csproj
-        # NuGet package id, used for version detection & defaults to project name
-        PACKAGE_NAME: itsWindows11.NtfsReader
-        # API key to authenticate with NuGet server
-        NUGET_KEY: ${{secrets.NUGET_API_KEY}}
-        # Flag to toggle pushing symbols along with nuget package to the server, disabled by default
-        INCLUDE_SYMBOLS: true
+      - name: Download NuGet packages from test run
+        uses: actions/download-artifact@v4
+        with:
+          name: nupkgs
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: nupkgs
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.x
+
+      - name: Push to NuGet
+        run: |
+          dotnet nuget push nupkgs/*.nupkg \
+            --api-key ${{ secrets.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+          dotnet nuget push nupkgs/*.snupkg \
+            --api-key ${{ secrets.NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate

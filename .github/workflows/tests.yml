@@ -2,16 +2,60 @@ name: Tests
 
 on:
   push:
-    branches: [ main, master, 'copilot/**' ]
+    branches: [ main, master, release, 'copilot/**' ]
   pull_request:
 
 permissions:
   contents: read
 
 jobs:
+  # ── Build once ─────────────────────────────────────────────────────────────
+  # Builds all TFMs, packs the NuGet package, and uploads the outputs so every
+  # test job can reuse the compiled binaries without rebuilding from scratch.
+  build:
+    name: Build & Pack
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET (all TFMs)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.x
+            9.x
+            10.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Pack NuGet
+        run: dotnet pack src/NtfsReader/NtfsReader.csproj --no-build -c Release -o nupkgs
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          # Includes compiled DLLs for every TFM so test jobs can run --no-build.
+          path: src/**/bin/Release/
+
+      - name: Upload NuGet packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: nupkgs
+          path: nupkgs/
+
+  # ── Test matrix ────────────────────────────────────────────────────────────
+  # Downloads the pre-built binaries from the build job and runs the tests for
+  # each OS × TFM combination without recompiling.
   test:
     name: Test (${{ matrix.os }} / net${{ matrix.tfm }})
     runs-on: ${{ matrix.os }}
+    needs: build
 
     strategy:
       fail-fast: false
@@ -27,11 +71,11 @@ jobs:
         with:
           dotnet-version: ${{ matrix.tfm }}
 
-      - name: Restore
-        run: dotnet restore
-
-      - name: Build
-        run: dotnet build --no-restore -c Release
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: src
 
       - name: Test
         run: dotnet test --no-build -c Release --framework net${{ matrix.tfm }} --logger "console;verbosity=normal"
