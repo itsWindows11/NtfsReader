@@ -1,0 +1,33 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, master, 'copilot/**' ]
+  pull_request:
+
+jobs:
+  test:
+    name: Test (net${{ matrix.tfm }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        tfm: ['8.0', '9.0', '10.0']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET ${{ matrix.tfm }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ matrix.tfm }}
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Test
+        run: dotnet test --no-build -c Release --framework net${{ matrix.tfm }} --logger "console;verbosity=normal"
