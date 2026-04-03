@@ -4,7 +4,7 @@
 		<LangVersion>14</LangVersion>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<PackageId>itsWindows11.NtfsReader</PackageId>
-		<Version>0.0.3</Version>
+		<Version>0.1.0</Version>
 		<Authors>itsWindows11</Authors>
 		<Company>-</Company>
 		<RepositoryUrl>https://github.com/itsWindows11/NtfsReader</RepositoryUrl>
