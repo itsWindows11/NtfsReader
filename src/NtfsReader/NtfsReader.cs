@@ -364,7 +364,7 @@ public sealed partial class NtfsReader : IDisposable
             if ((offset + 4 <= bufLen) && (*(uint*)attribute == 0xFFFFFFFF))
                 break;
 
-            if ((offset + 4 > bufLen) || attribute->Length < 3 || (offset + attribute->Length > bufLen))
+            if ((offset + 4 > bufLen) || attribute->Length < 4 || (offset + attribute->Length > bufLen))
                 break;
 
             if (attribute->Length == 0)
