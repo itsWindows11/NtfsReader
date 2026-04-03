@@ -1002,8 +1002,16 @@ public sealed partial class NtfsReader : IDisposable
                     totalBytesRead += (BlockEnd - BlockStart) * _diskInfo.BytesPerMftRecord;
                 }
 
+                // ReadNextChunk bounds BlockEnd so that (nodeIndex - BlockStart) * BytesPerMftRecord
+                // stays within bufferSize.  Assert this invariant explicitly so that pointer arithmetic
+                // below is demonstrably safe even though the backing array may be larger than bufferSize
+                // (ArrayPool.Rent can return a larger-than-requested buffer).
+                ulong recordOffset = (nodeIndex - BlockStart) * _diskInfo.BytesPerMftRecord;
+                if (recordOffset + _diskInfo.BytesPerMftRecord > bufferSize)
+                    break;
+
                 FixupRawMftdata(
-                        buffer + (nodeIndex - BlockStart) * _diskInfo.BytesPerMftRecord,
+                        buffer + recordOffset,
                         _diskInfo.BytesPerMftRecord
                     );
 
@@ -1012,7 +1020,7 @@ public sealed partial class NtfsReader : IDisposable
                     streams = [];
 
                 if (!ProcessMftRecord(
-                        buffer + (nodeIndex - BlockStart) * _diskInfo.BytesPerMftRecord,
+                        buffer + recordOffset,
                         _diskInfo.BytesPerMftRecord,
                         nodeIndex,
                         out Node newNode,
