@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿using System.Buffers;
+using System.Collections.Generic;
 using Microsoft.Win32.SafeHandles;
 
 namespace System.IO.Filesystem.Ntfs;
@@ -918,8 +919,11 @@ public sealed partial class NtfsReader : IDisposable
         uint bufferSize =
             (Environment.OSVersion.Version.Major >= 6 ? 256u : 64u) * 1024;
 
-        byte[] data = new byte[bufferSize];
-
+        // Rent a buffer from the shared pool to avoid a large heap allocation.
+        // ArrayPool may return a larger array; always use bufferSize for sizing, not data.Length.
+        byte[] data = ArrayPool<byte>.Shared.Rent((int)bufferSize);
+        try
+        {
         fixed (byte* buffer = data)
         {
             //Read the $MFT record from disk into memory, which is always the first record in the MFT. 
@@ -1023,6 +1027,11 @@ public sealed partial class NtfsReader : IDisposable
             }
 
             return nodes;
+        }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(data);
         }
     }
 }

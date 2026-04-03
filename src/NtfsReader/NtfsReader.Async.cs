@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Generic;
 using System.Text;
 using System.Threading;
@@ -166,8 +167,12 @@ public sealed partial class NtfsReader
     private async Task<Node[]> ProcessMftAsync(CancellationToken cancellationToken)
     {
         uint bufferSize = (Environment.OSVersion.Version.Major >= 6 ? 256u : 64u) * 1024;
-        byte[] data = new byte[bufferSize];
 
+        // Rent a buffer from the shared pool to avoid a large heap allocation.
+        // ArrayPool may return a larger array; always use bufferSize for sizing, not data.Length.
+        byte[] data = ArrayPool<byte>.Shared.Rent((int)bufferSize);
+        try
+        {
         // --- Read and process the $MFT inode (always inode 0). ---
         long mftStartPos = (long)(_diskInfo.MftStartLcn * _diskInfo.BytesPerSector * _diskInfo.SectorsPerCluster);
 
@@ -302,5 +307,10 @@ public sealed partial class NtfsReader
         }
 
         return nodes;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(data);
+        }
     }
 }

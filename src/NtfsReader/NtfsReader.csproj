@@ -21,5 +21,9 @@
 		<PackageReference Include="PolySharp" Version="1.15.0"
 		                  PrivateAssets="all"
 		                  IncludeAssets="runtime;build;native;contentfiles;analyzers" />
+		<!-- System.Buffers provides ArrayPool<T> for netstandard2.0 (built-in for net8.0+).
+		     PrivateAssets=all keeps it out of consumers' NuGet dependency graph. -->
+		<PackageReference Include="System.Buffers" Version="4.5.1"
+		                  PrivateAssets="all" />
 	</ItemGroup>
 </Project>
