@@ -8,14 +8,13 @@ namespace System.IO.Filesystem.Ntfs;
 
 public sealed partial class NtfsReader
 {
-    // FILE_FLAG_OVERLAPPED tells the kernel to perform truly asynchronous I/O on the
-    // volume handle.  Without this flag, ReadFile always blocks the calling thread even
-    // when invoked through FileStream.ReadAsync.
+#if NET6_0_OR_GREATER
+    // FILE_FLAG_OVERLAPPED enables the kernel to perform truly asynchronous I/O on the
+    // volume handle.  RandomAccess.ReadAsync requires an overlapped handle on Windows
+    // so that it can pass the file position via the OVERLAPPED structure rather than
+    // calling SetFilePointer (which raw volume handles do not support).
     private const int FILE_FLAG_OVERLAPPED = 0x40000000;
-
-    // Holds the async-capable FileStream only while InitializeAsync is executing.
-    // Null at all other times.
-    private System.IO.FileStream _asyncStream;
+#endif
 
     /// <summary>
     /// Drives the async initialization path. Called exclusively by
@@ -34,28 +33,29 @@ public sealed partial class NtfsReader
         GetVolumeNameForVolumeMountPoint(_driveInfo.RootDirectory.Name, builder, builder.Capacity);
         string volume = builder.ToString().TrimEnd(['\\']);
 
-        // Open the volume with FILE_FLAG_OVERLAPPED so the OS performs true async I/O.
+#if NET6_0_OR_GREATER
+        // On .NET 6+ open with FILE_FLAG_OVERLAPPED so that RandomAccess.ReadAsync issues
+        // genuine kernel async I/O without blocking a thread pool thread.
+        const int openFlags = FILE_FLAG_OVERLAPPED;
+#else
+        // On .NET Standard 2.0 open without FILE_FLAG_OVERLAPPED; reads are dispatched via
+        // Task.Run so the calling thread is never blocked even though the underlying I/O
+        // is synchronous.  The OVERLAPPED offset fields still specify the read position.
+        const int openFlags = 0;
+#endif
+
         _volumeHandle = CreateFile(
             volume,
             FileAccess.Read,
             FileShare.All,
             IntPtr.Zero,
             FileMode.Open,
-            FILE_FLAG_OVERLAPPED,
+            openFlags,
             IntPtr.Zero);
 
         if (_volumeHandle == null || _volumeHandle.IsInvalid)
             throw new IOException(
                 $"Unable to open volume {driveInfo}. Make sure it exists and that you have Administrator privileges.");
-
-        // Wrap the overlapped handle in a FileStream with isAsync:true.
-        // The FileStream takes ownership of the SafeFileHandle (closes it on Dispose).
-        _asyncStream = new System.IO.FileStream(
-            _volumeHandle,
-            System.IO.FileAccess.Read,
-            bufferSize: 4096,
-            isAsync: true);
-        _volumeHandle = null; // owned by _asyncStream from here on
 
         try
         {
@@ -64,17 +64,25 @@ public sealed partial class NtfsReader
         }
         finally
         {
-            _asyncStream.Dispose();
-            _asyncStream = null;
+            _volumeHandle.Dispose();
+            _volumeHandle = null;
         }
 
         _nameIndex.Clear();
         GC.Collect();
     }
+
     /// <summary>
-    /// Issues a true async read of exactly <paramref name="count"/> bytes from the volume
+    /// Issues an async read of exactly <paramref name="count"/> bytes from the volume
     /// at absolute byte offset <paramref name="absolutePosition"/> into
     /// <paramref name="buffer"/> starting at <paramref name="offset"/>.
+    /// <para>
+    /// On .NET 6+ this is a true kernel async operation via
+    /// <see cref="System.IO.RandomAccess"/>, which passes the file position directly
+    /// through the OVERLAPPED structure without calling <c>SetFilePointer</c>.
+    /// On .NET Standard 2.0 the underlying synchronous <c>ReadFile</c> P/Invoke runs
+    /// on a thread pool thread via <see cref="Task.Run"/>.
+    /// </para>
     /// </summary>
     private async Task ReadFileAsync(
         byte[] buffer,
@@ -83,19 +91,25 @@ public sealed partial class NtfsReader
         long absolutePosition,
         CancellationToken cancellationToken)
     {
-        // FileStream tracks its own position independently of the OS file pointer when
-        // opened with isAsync:true (overlapped I/O).  Seek updates that internal position;
-        // ReadAsync then passes it via the OVERLAPPED structure to the kernel.
-        _asyncStream.Seek(absolutePosition, System.IO.SeekOrigin.Begin);
-
         int totalRead = 0;
         while (totalRead < count)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            int read = await _asyncStream
-                .ReadAsync(buffer, offset + totalRead, count - totalRead, cancellationToken)
-                .ConfigureAwait(false);
+#if NET6_0_OR_GREATER
+            int read = await System.IO.RandomAccess.ReadAsync(
+                _volumeHandle,
+                buffer.AsMemory(offset + totalRead, count - totalRead),
+                absolutePosition + totalRead,
+                cancellationToken).ConfigureAwait(false);
+#else
+            int capturedOffset = offset + totalRead;
+            int capturedCount = count - totalRead;
+            long capturedPosition = absolutePosition + totalRead;
+            int read = await Task.Run(
+                () => ReadFileSync(buffer, capturedOffset, capturedCount, capturedPosition),
+                cancellationToken).ConfigureAwait(false);
+#endif
 
             if (read == 0)
                 throw new IOException("Unable to read volume information: unexpected end of data.");
@@ -103,6 +117,25 @@ public sealed partial class NtfsReader
             totalRead += read;
         }
     }
+
+#if !NET6_0_OR_GREATER
+    /// <summary>
+    /// Synchronous read helper used by the .NET Standard 2.0 async path.
+    /// Reads <paramref name="count"/> bytes from the volume handle using the P/Invoke
+    /// <c>ReadFile</c> with an OVERLAPPED offset; intended to be called from
+    /// <see cref="Task.Run"/>.
+    /// </summary>
+    private unsafe int ReadFileSync(byte[] buffer, int offset, int count, long absolutePosition)
+    {
+        fixed (byte* ptr = buffer)
+        {
+            var overlapped = new NativeOverlapped((ulong)absolutePosition);
+            if (!ReadFile(_volumeHandle, (IntPtr)(ptr + offset), (uint)count, out uint read, ref overlapped))
+                throw new IOException("Unable to read volume information.");
+            return (int)read;
+        }
+    }
+#endif
 
     private async Task InitializeDiskInfoAsync(CancellationToken cancellationToken)
     {

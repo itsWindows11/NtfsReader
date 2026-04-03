@@ -108,8 +108,12 @@ public class IntegrationTests
         int mismatches = 0;
 
         // Check up to 200 real files in System32 (well-known, stable sizes).
+        // Skip reparse points (symlinks/junctions): FileInfo.Length follows the link and
+        // returns the target's size, while node.Size holds the link's own MFT data size
+        // (typically 0), causing a deliberate and expected mismatch.
         foreach (var node in nodes.Where(n =>
             (n.Attributes & Attributes.Directory) == 0 &&
+            (n.Attributes & Attributes.ReparsePoint) == 0 &&
             n.FullName.StartsWith(Environment.SystemDirectory, StringComparison.OrdinalIgnoreCase)))
         {
             if (filesChecked >= 200) break;

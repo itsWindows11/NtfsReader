@@ -103,10 +103,14 @@ public sealed partial class NtfsReader
     /// </returns>
     /// <remarks>
     /// <para>
-    /// The volume is opened with <c>FILE_FLAG_OVERLAPPED</c> and wrapped in a
-    /// <see cref="System.IO.FileStream"/> with <c>isAsync: true</c>, so every disk read
-    /// issues a genuine kernel async I/O operation (overlapped I/O). The calling thread
-    /// is returned to its caller at each <c>await</c> and never blocks on disk I/O.
+    /// The volume is opened with <c>FILE_FLAG_OVERLAPPED</c> on .NET 6+ so that every disk
+    /// read issues a genuine kernel async I/O operation via
+    /// <see cref="System.IO.RandomAccess"/>.  The file position is passed directly through
+    /// the <c>OVERLAPPED</c> structure; raw volume handles do not support
+    /// <c>SetFilePointer</c> and are therefore never wrapped in a
+    /// <see cref="System.IO.FileStream"/>.
+    /// On .NET Standard 2.0 the volume is opened synchronously and each read runs on a
+    /// thread-pool thread via <see cref="Task.Run"/>, so the calling thread is never blocked.
     /// CPU-bound MFT record parsing runs synchronously between reads.
     /// </para>
     /// </remarks>
@@ -162,6 +166,75 @@ public sealed partial class NtfsReader
 
         return new List<INode>(bag);
     }
+
+#if !NETSTANDARD2_0
+    /// <summary>
+    /// Asynchronously scans the MFT of <paramref name="driveInfo"/> and streams the
+    /// matching nodes one by one via <c>await foreach</c>.
+    /// </summary>
+    /// <param name="driveInfo">The NTFS drive to read. Must not be <see langword="null"/>.</param>
+    /// <param name="retrieveMode">
+    /// Flags that control which optional metadata is loaded into memory.
+    /// </param>
+    /// <param name="rootPath">
+    /// The path prefix to filter by (e.g. <c>"C:\\"</c>). Wildcards are not supported.
+    /// </param>
+    /// <param name="cancellationToken">A token that can cancel the scan or enumeration.</param>
+    /// <returns>
+    /// An <see cref="IAsyncEnumerable{INode}"/> that yields matching nodes after the
+    /// async MFT scan completes.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// Full path resolution requires the complete node table (parent-directory inode
+    /// numbers can be higher than child inodes), so the entire MFT must be read before
+    /// the first node is yielded.  The scan itself is async; nodes are then yielded
+    /// sequentially without allocating an intermediate <see cref="List{INode}"/>.
+    /// </para>
+    /// <para>
+    /// The caller must have <b>Administrator</b> privileges on Windows; otherwise an
+    /// <see cref="IOException"/> is thrown.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="driveInfo"/> is <see langword="null"/>.</exception>
+    /// <exception cref="IOException">The volume could not be opened.</exception>
+    /// <exception cref="OperationCanceledException">
+    /// <paramref name="cancellationToken"/> was cancelled.
+    /// </exception>
+    public static async IAsyncEnumerable<INode> EnumerateNodesAsync(
+        DriveInfo driveInfo,
+        RetrieveMode retrieveMode,
+        string rootPath,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (driveInfo == null)
+            throw new ArgumentNullException(nameof(driveInfo));
+
+        // The complete node table must be built before any FullName can be resolved,
+        // because a file's parent directory may have a higher inode number than the file
+        // itself.  Yielding mid-scan would produce incorrect paths in those cases.
+        var reader = new NtfsReader();
+        await reader.InitializeAsync(driveInfo, retrieveMode, cancellationToken)
+            .ConfigureAwait(false);
+
+        int nodeCount = reader._nodes.Length;
+        for (int i = 0; i < nodeCount; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (reader._nodes[i].NameIndex == 0)
+                continue;
+
+            // Path resolution requires walking the full parent chain; there is no cheaper
+            // preliminary check available.  This mirrors the same call in GetNodes.
+            if (!reader.GetNodeFullNameCore((uint)i)
+                    .StartsWith(rootPath, StringComparison.InvariantCultureIgnoreCase))
+                continue;
+
+            yield return new NodeWrapper(reader, (uint)i, reader._nodes[i]);
+        }
+    }
+#endif
 
     /// <summary>
     /// Returns the raw volume bitmap that indicates which clusters are in use.
