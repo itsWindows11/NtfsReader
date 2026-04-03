@@ -14,6 +14,7 @@ namespace NtfsReader.Tests;
 /// These tests use the <c>internal</c> helper <c>FixupRawMftdataAt</c> which the library
 /// exposes specifically for testing via InternalsVisibleTo.
 /// </summary>
+[TestClass]
 public class MftRecordFixupTests
 {
     private static System.IO.Filesystem.Ntfs.NtfsReader CreateBare()
@@ -92,7 +93,7 @@ public class MftRecordFixupTests
     private static ushort ReadUInt16(byte[] buf, int offset)
         => (ushort)(buf[offset] | (buf[offset + 1] << 8));
 
-    [Fact]
+    [TestMethod]
     public void FixupRawMftdataAt_ReplacesSequenceNumbers_WithOriginals()
     {
         var reader = CreateBare();
@@ -100,11 +101,11 @@ public class MftRecordFixupTests
 
         InvokeFixupAt(reader, buf, 0UL, 1024UL);
 
-        Assert.Equal(0x1111, ReadUInt16(buf, 510));
-        Assert.Equal(0x2222, ReadUInt16(buf, 1022));
+        Assert.AreEqual((ushort)0x1111, ReadUInt16(buf, 510));
+        Assert.AreEqual((ushort)0x2222, ReadUInt16(buf, 1022));
     }
 
-    [Fact]
+    [TestMethod]
     public void FixupRawMftdataAt_NonFileRecord_IsNoOp()
     {
         var reader = CreateBare();
@@ -114,11 +115,11 @@ public class MftRecordFixupTests
         InvokeFixupAt(reader, buf, 0UL, 1024UL);
 
         // Sentinel bytes must not have been touched.
-        Assert.Equal(0xAA, buf[510]);
-        Assert.Equal(0xBB, buf[511]);
+        Assert.AreEqual((byte)0xAA, buf[510]);
+        Assert.AreEqual((byte)0xBB, buf[511]);
     }
 
-    [Fact]
+    [TestMethod]
     public void FixupRawMftdataAt_CorruptUSN_ThrowsException()
     {
         var reader = CreateBare();
@@ -127,13 +128,11 @@ public class MftRecordFixupTests
         // Corrupt the end-of-sector stamp so it no longer matches the header USN.
         WriteUInt16(buf, 510, 0xDEAD);
 
-        var ex = Assert.Throws<TargetInvocationException>(() =>
+        Assert.ThrowsException<TargetInvocationException>(() =>
             InvokeFixupAt(reader, buf, 0UL, 1024UL));
-
-        Assert.NotNull(ex.InnerException);
     }
 
-    [Fact]
+    [TestMethod]
     public void FixupRawMftdataAt_AppliedAtNonZeroOffset()
     {
         var reader = CreateBare();
@@ -145,7 +144,7 @@ public class MftRecordFixupTests
 
         InvokeFixupAt(reader, buf, 1024UL, 1024UL);
 
-        Assert.Equal(0xAAAA, ReadUInt16(buf, 1024 + 510));
-        Assert.Equal(0xBBBB, ReadUInt16(buf, 1024 + 1022));
+        Assert.AreEqual((ushort)0xAAAA, ReadUInt16(buf, 1024 + 510));
+        Assert.AreEqual((ushort)0xBBBB, ReadUInt16(buf, 1024 + 1022));
     }
 }

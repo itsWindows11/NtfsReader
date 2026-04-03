@@ -20,6 +20,7 @@ namespace NtfsReader.Tests;
 ///     within a sane range).
 ///   - <see cref="INode.FullName"/> always begins with the drive root.
 /// </summary>
+[TestClass]
 public class IntegrationTests
 {
     // ──────────────────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ public class IntegrationTests
     // Sync constructor
     // ──────────────────────────────────────────────────────────────────────────
 
-    [Fact]
+    [TestMethod]
     public void SyncConstructor_ReturnsNodes_OnWindowsAdmin()
     {
         if (!IsWindowsAdmin())
@@ -62,11 +63,11 @@ public class IntegrationTests
         var reader = new System.IO.Filesystem.Ntfs.NtfsReader(drive, RetrieveMode.Minimal);
         var nodes = reader.GetNodes(drive.Name);
 
-        Assert.NotNull(nodes);
-        Assert.True(nodes.Count > 0, "Expected at least one node on the system volume.");
+        Assert.IsNotNull(nodes);
+        Assert.IsTrue(nodes.Count > 0, "Expected at least one node on the system volume.");
     }
 
-    [Fact]
+    [TestMethod]
     public void SyncConstructor_NodeFullNamesStartWithDriveRoot()
     {
         if (!IsWindowsAdmin())
@@ -81,14 +82,16 @@ public class IntegrationTests
 
         // Sample up to 500 nodes to keep the test fast.
         foreach (var node in nodes.Take(500))
-            Assert.StartsWith(drive.Name, node.FullName, StringComparison.OrdinalIgnoreCase);
+            Assert.IsTrue(
+                node.FullName.StartsWith(drive.Name, StringComparison.OrdinalIgnoreCase),
+                $"FullName '{node.FullName}' does not start with drive root '{drive.Name}'.");
     }
 
     // ──────────────────────────────────────────────────────────────────────────
     // File-size correctness (issue #2 regression test)
     // ──────────────────────────────────────────────────────────────────────────
 
-    [Fact]
+    [TestMethod]
     public void FileSizes_MatchFileInfoLength_ForSampledFiles()
     {
         if (!IsWindowsAdmin())
@@ -128,14 +131,14 @@ public class IntegrationTests
 
         // We must have examined at least a few files and found zero size mismatches.
         if (filesChecked > 0)
-            Assert.Equal(0, mismatches);
+            Assert.AreEqual(0, mismatches);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
     // Async factory
     // ──────────────────────────────────────────────────────────────────────────
 
-    [Fact]
+    [TestMethod]
     public async Task CreateAsync_ProducesSameNodeCount_AsSyncConstructor()
     {
         if (!IsWindowsAdmin())
@@ -152,10 +155,10 @@ public class IntegrationTests
         int syncCount = syncReader.GetNodes(drive.Name).Count;
         int asyncCount = asyncReader.GetNodes(drive.Name).Count;
 
-        Assert.Equal(syncCount, asyncCount);
+        Assert.AreEqual(syncCount, asyncCount);
     }
 
-    [Fact]
+    [TestMethod]
     public async Task CreateAsync_Cancellation_ThrowsOperationCanceledException()
     {
         if (!IsWindowsAdmin())
@@ -169,15 +172,23 @@ public class IntegrationTests
         // Cancel immediately so the task has no chance to complete.
         cts.Cancel();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            System.IO.Filesystem.Ntfs.NtfsReader.CreateAsync(drive, RetrieveMode.Minimal, cts.Token));
+        try
+        {
+            await System.IO.Filesystem.Ntfs.NtfsReader
+                .CreateAsync(drive, RetrieveMode.Minimal, cts.Token);
+            Assert.Fail("Expected OperationCanceledException was not thrown.");
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected.
+        }
     }
 
     // ──────────────────────────────────────────────────────────────────────────
     // RetrieveMode.StandardInformations
     // ──────────────────────────────────────────────────────────────────────────
 
-    [Fact]
+    [TestMethod]
     public void StandardInformations_TimestampsArePlausible()
     {
         if (!IsWindowsAdmin())
@@ -197,8 +208,10 @@ public class IntegrationTests
 
         foreach (var node in nodes.Take(200))
         {
-            Assert.InRange(node.CreationTime, minDate, maxDate);
-            Assert.InRange(node.LastChangeTime, minDate, maxDate);
+            Assert.IsTrue(node.CreationTime >= minDate && node.CreationTime <= maxDate,
+                $"CreationTime {node.CreationTime} is outside the expected range.");
+            Assert.IsTrue(node.LastChangeTime >= minDate && node.LastChangeTime <= maxDate,
+                $"LastChangeTime {node.LastChangeTime} is outside the expected range.");
         }
     }
 
@@ -206,7 +219,7 @@ public class IntegrationTests
     // DiskInfo
     // ──────────────────────────────────────────────────────────────────────────
 
-    [Fact]
+    [TestMethod]
     public void DiskInfo_HasSaneBytesPerSector()
     {
         if (!IsWindowsAdmin())
@@ -219,26 +232,26 @@ public class IntegrationTests
         var reader = new System.IO.Filesystem.Ntfs.NtfsReader(drive, RetrieveMode.Minimal);
 
         // NTFS supports 512, 1024, 2048 or 4096 bytes per sector.
-        Assert.True(reader.DiskInfo.BytesPerSector is 512 or 1024 or 2048 or 4096);
-        Assert.True(reader.DiskInfo.BytesPerMftRecord is 1024 or 4096);
-        Assert.True(reader.DiskInfo.TotalSectors > 0);
+        Assert.IsTrue(reader.DiskInfo.BytesPerSector is 512 or 1024 or 2048 or 4096);
+        Assert.IsTrue(reader.DiskInfo.BytesPerMftRecord is 1024 or 4096);
+        Assert.IsTrue(reader.DiskInfo.TotalSectors > 0);
     }
 
     // ──────────────────────────────────────────────────────────────────────────
     // ArgumentNullException guard on public API
     // ──────────────────────────────────────────────────────────────────────────
 
-    [Fact]
+    [TestMethod]
     public void Constructor_NullDriveInfo_ThrowsArgumentNullException()
     {
-        Assert.Throws<ArgumentNullException>(() =>
+        Assert.ThrowsException<ArgumentNullException>(() =>
             new System.IO.Filesystem.Ntfs.NtfsReader(null!, RetrieveMode.Minimal));
     }
 
-    [Fact]
+    [TestMethod]
     public async Task CreateAsync_NullDriveInfo_ThrowsArgumentNullException()
     {
-        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+        await Assert.ThrowsExceptionAsync<ArgumentNullException>(() =>
             System.IO.Filesystem.Ntfs.NtfsReader.CreateAsync(null!, RetrieveMode.Minimal));
     }
 }

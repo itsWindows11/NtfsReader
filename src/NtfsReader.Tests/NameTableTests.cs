@@ -13,6 +13,7 @@ namespace NtfsReader.Tests;
 ///   - Duplicate names reuse the existing index (no duplication in _names).
 ///   - GetNameFromIndex round-trips every name inserted via GetNameIndex.
 /// </summary>
+[TestClass]
 public class NameTableTests
 {
     // Create a bare NtfsReader instance with no I/O, purely to test the internal
@@ -26,36 +27,35 @@ public class NameTableTests
         return (System.IO.Filesystem.Ntfs.NtfsReader)ctor.Invoke(null);
     }
 
-    [Fact]
+    [TestMethod]
     public void Index0_IsReservedSentinel_ReturnsNull()
     {
         var reader = CreateBare();
         // Before any names are added, index 0 must already return null.
-        Assert.Null(reader.GetNameFromIndex(0));
+        Assert.IsNull(reader.GetNameFromIndex(0));
     }
 
-    [Fact]
+    [TestMethod]
     public void FirstRealName_GetsIndexGreaterThanZero()
     {
         var reader = CreateBare();
 
-        // Use reflection to call the private GetNameIndex.
         int idx = GetNameIndex(reader, "hello");
 
-        Assert.True(idx > 0, "First real name must not get the reserved index 0.");
+        Assert.IsTrue(idx > 0, "First real name must not get the reserved index 0.");
     }
 
-    [Fact]
+    [TestMethod]
     public void GetNameFromIndex_RoundTrips()
     {
         var reader = CreateBare();
 
         int idx = GetNameIndex(reader, "Windows");
 
-        Assert.Equal("Windows", reader.GetNameFromIndex(idx));
+        Assert.AreEqual("Windows", reader.GetNameFromIndex(idx));
     }
 
-    [Fact]
+    [TestMethod]
     public void DuplicateName_ReturnsSameIndex()
     {
         var reader = CreateBare();
@@ -63,10 +63,10 @@ public class NameTableTests
         int idx1 = GetNameIndex(reader, "System32");
         int idx2 = GetNameIndex(reader, "System32");
 
-        Assert.Equal(idx1, idx2);
+        Assert.AreEqual(idx1, idx2);
     }
 
-    [Fact]
+    [TestMethod]
     public void MultipleDistinctNames_GetDistinctIndices()
     {
         var reader = CreateBare();
@@ -75,12 +75,12 @@ public class NameTableTests
         int idx2 = GetNameIndex(reader, "beta");
         int idx3 = GetNameIndex(reader, "gamma");
 
-        Assert.NotEqual(idx1, idx2);
-        Assert.NotEqual(idx2, idx3);
-        Assert.NotEqual(idx1, idx3);
+        Assert.AreNotEqual(idx1, idx2);
+        Assert.AreNotEqual(idx2, idx3);
+        Assert.AreNotEqual(idx1, idx3);
     }
 
-    [Fact]
+    [TestMethod]
     public void GetNameFromIndex_AllNamesRoundTrip()
     {
         var reader = CreateBare();
@@ -89,10 +89,10 @@ public class NameTableTests
         var indices = names.Select(n => GetNameIndex(reader, n)).ToArray();
 
         for (int i = 0; i < names.Length; i++)
-            Assert.Equal(names[i], reader.GetNameFromIndex(indices[i]));
+            Assert.AreEqual(names[i], reader.GetNameFromIndex(indices[i]));
     }
 
-    [Fact]
+    [TestMethod]
     public void LargeNumberOfNames_NoCollisions()
     {
         var reader = CreateBare();
@@ -109,8 +109,8 @@ public class NameTableTests
         var uniqueIndices = new HashSet<int>();
         foreach (var (name, idx) in indices)
         {
-            Assert.True(uniqueIndices.Add(idx), $"Index {idx} used by more than one name.");
-            Assert.Equal(name, reader.GetNameFromIndex(idx));
+            Assert.IsTrue(uniqueIndices.Add(idx), $"Index {idx} used by more than one name.");
+            Assert.AreEqual(name, reader.GetNameFromIndex(idx));
         }
     }
 
