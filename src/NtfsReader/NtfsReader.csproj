@@ -25,5 +25,8 @@
 		     PrivateAssets=all keeps it out of consumers' NuGet dependency graph. -->
 		<PackageReference Include="System.Buffers" Version="4.5.1"
 		                  PrivateAssets="all" />
+		<!-- Microsoft.Bcl.AsyncInterfaces provides IAsyncEnumerable<T>, IAsyncEnumerator<T>,
+		     and the EnumeratorCancellationAttribute for netstandard2.0.  Built-in for net8.0+. -->
+		<PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
 	</ItemGroup>
 </Project>

@@ -167,7 +167,6 @@ public sealed partial class NtfsReader
         return new List<INode>(bag);
     }
 
-#if !NETSTANDARD2_0
     /// <summary>
     /// Asynchronously scans the MFT of <paramref name="driveInfo"/> and streams the
     /// matching nodes one by one via <c>await foreach</c>.
@@ -234,7 +233,6 @@ public sealed partial class NtfsReader
             yield return new NodeWrapper(reader, (uint)i, reader._nodes[i]);
         }
     }
-#endif
 
     /// <summary>
     /// Returns the raw volume bitmap that indicates which clusters are in use.
