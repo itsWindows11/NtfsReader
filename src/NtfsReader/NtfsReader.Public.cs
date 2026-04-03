@@ -86,28 +86,26 @@ public sealed partial class NtfsReader
     }
 
     /// <summary>
-    /// Creates an <see cref="NtfsReader"/> asynchronously, offloading the blocking MFT scan
-    /// to a thread-pool thread so the calling thread remains responsive.
+    /// Creates an <see cref="NtfsReader"/> asynchronously using true kernel async I/O.
     /// </summary>
     /// <param name="driveInfo">The NTFS drive to read. Must not be <see langword="null"/>.</param>
     /// <param name="retrieveMode">
     /// Flags that control which optional metadata is loaded into memory.
     /// </param>
     /// <param name="cancellationToken">
-    /// A token that can cancel the operation before the thread-pool work item starts.
-    /// Note that once the MFT scan begins it cannot be interrupted mid-scan.
+    /// A token that can cancel the operation. Cancellation is honoured between chunk
+    /// reads; an in-progress read is not interrupted mid-transfer.
     /// </param>
     /// <returns>
     /// A <see cref="Task{NtfsReader}"/> that completes when the MFT has been fully read.
     /// </returns>
     /// <remarks>
     /// <para>
-    /// NTFS raw-volume I/O on Windows is inherently synchronous at the kernel level when
-    /// accessed via <c>CreateFile</c> without <c>FILE_FLAG_OVERLAPPED</c>. The most practical
-    /// way to expose an async-friendly API on .NET Standard 2.0 — without sacrificing
-    /// correctness or cross-runtime compatibility — is therefore to offload the scan to a
-    /// dedicated thread-pool thread via <see cref="Task.Run{TResult}(Func{TResult}, CancellationToken)"/>.
-    /// This frees the calling (e.g. UI or ASP.NET) thread for the duration of the scan.
+    /// The volume is opened with <c>FILE_FLAG_OVERLAPPED</c> and wrapped in a
+    /// <see cref="System.IO.FileStream"/> with <c>isAsync: true</c>, so every disk read
+    /// issues a genuine kernel async I/O operation (overlapped I/O). The calling thread
+    /// is returned to its caller at each <c>await</c> and never blocks on disk I/O.
+    /// CPU-bound MFT record parsing runs synchronously between reads.
     /// </para>
     /// </remarks>
     /// <exception cref="ArgumentNullException"><paramref name="driveInfo"/> is <see langword="null"/>.</exception>
@@ -116,13 +114,20 @@ public sealed partial class NtfsReader
     /// process lacks Administrator privileges.
     /// </exception>
     /// <exception cref="OperationCanceledException">
-    /// <paramref name="cancellationToken"/> was cancelled before the scan started.
+    /// <paramref name="cancellationToken"/> was cancelled.
     /// </exception>
-    public static Task<NtfsReader> CreateAsync(
+    public static async Task<NtfsReader> CreateAsync(
         DriveInfo driveInfo,
         RetrieveMode retrieveMode,
         CancellationToken cancellationToken = default)
-        => Task.Run(() => new NtfsReader(driveInfo, retrieveMode), cancellationToken);
+    {
+        if (driveInfo == null)
+            throw new ArgumentNullException(nameof(driveInfo));
+
+        var reader = new NtfsReader();
+        await reader.InitializeAsync(driveInfo, retrieveMode, cancellationToken).ConfigureAwait(false);
+        return reader;
+    }
 
     /// <summary>
     /// Gets geometry and layout information for the scanned volume.

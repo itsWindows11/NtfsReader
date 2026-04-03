@@ -28,6 +28,11 @@ public sealed partial class NtfsReader : IDisposable
     //this will be deallocated once the MFT reading is finished
     private readonly Dictionary<string, int> _nameIndex = new(128 * 1024, StringComparer.Ordinal);
 
+    // Private constructor used exclusively by the async factory (CreateAsync).
+    // The public constructor drives synchronous initialization; this one leaves
+    // all fields at their defaults so InitializeAsync can set them.
+    private NtfsReader() { }
+
     /// <summary>
     /// Raised once the bitmap data has been read.
     /// </summary>
@@ -149,9 +154,19 @@ public sealed partial class NtfsReader : IDisposable
         byte[] volumeData = new byte[512];
 
         fixed (byte* ptr = volumeData)
-        {
             ReadFile(ptr, volumeData.Length, 0);
 
+        ParseBootSectorData(volumeData);
+    }
+
+    /// <summary>
+    /// Parses the raw 512-byte boot sector buffer and populates <see cref="_diskInfo"/>.
+    /// Shared between the synchronous and asynchronous initialization paths.
+    /// </summary>
+    private unsafe void ParseBootSectorData(byte[] volumeData)
+    {
+        fixed (byte* ptr = volumeData)
+        {
             BootSector* bootSector = (BootSector*)ptr;
 
             if (bootSector->Signature != 0x202020205346544E)
@@ -180,6 +195,37 @@ public sealed partial class NtfsReader : IDisposable
 
             _diskInfo = diskInfo;
         }
+    }
+
+    /// <summary>
+    /// Applies the Update Sequence Array fixup to a single MFT record stored at
+    /// <paramref name="recordOffset"/> bytes inside the managed <paramref name="buffer"/>.
+    /// Safe to call from async methods: the <c>fixed</c> block does not span any
+    /// <c>await</c> point.
+    /// </summary>
+    private unsafe void FixupRawMftdataAt(byte[] buffer, ulong recordOffset, ulong len)
+    {
+        fixed (byte* ptr = buffer)
+            FixupRawMftdata(ptr + recordOffset, len);
+    }
+
+    /// <summary>
+    /// Parses the MFT record at <paramref name="recordOffset"/> bytes inside the managed
+    /// <paramref name="buffer"/> and writes the result to <paramref name="node"/>.
+    /// Safe to call from async methods: the <c>fixed</c> block does not span any
+    /// <c>await</c> point.
+    /// </summary>
+    private unsafe bool ProcessMftRecordAt(
+        byte[] buffer,
+        ulong recordOffset,
+        ulong bufLen,
+        uint nodeIndex,
+        out Node node,
+        List<Stream> streams,
+        bool isMftNode)
+    {
+        fixed (byte* ptr = buffer)
+            return ProcessMftRecord(ptr + recordOffset, bufLen, nodeIndex, out node, streams, isMftNode);
     }
 
     /// <summary>
@@ -257,6 +303,25 @@ public sealed partial class NtfsReader : IDisposable
                 runOffsetBytes[i++] = 0xFF;
 
         return runOffset;
+    }
+
+    // ── Test helpers ──────────────────────────────────────────────────────────
+    // These thin wrappers bridge the unsafe byte* API to managed byte[] so that
+    // the NtfsReader.Tests project (granted access via InternalsVisibleTo) can
+    // exercise the run-list decoder without P/Invoke or unsafe reflection tricks.
+
+    /// <summary>Managed wrapper around <see cref="ProcessRunLength"/> for unit testing.</summary>
+    internal static unsafe long DecodeRunLength(byte[] runData, int runLengthSize, ref uint index)
+    {
+        fixed (byte* ptr = runData)
+            return ProcessRunLength(ptr, (uint)runData.Length, runLengthSize, ref index);
+    }
+
+    /// <summary>Managed wrapper around <see cref="ProcessRunOffset"/> for unit testing.</summary>
+    internal static unsafe long DecodeRunOffset(byte[] runData, int runOffsetSize, ref uint index)
+    {
+        fixed (byte* ptr = runData)
+            return ProcessRunOffset(ptr, (uint)runData.Length, runOffsetSize, ref index);
     }
 
     /// <summary>
