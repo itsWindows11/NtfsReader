@@ -1,15 +1,56 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 	<PropertyGroup>
-		<TargetFramework>netstandard2.0</TargetFramework>
-		<LangVersion>12</LangVersion>
+		<TargetFrameworks>netstandard2.0;net8.0;net9.0;net10.0</TargetFrameworks>
+		<LangVersion>14</LangVersion>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<PackageId>itsWindows11.NtfsReader</PackageId>
-		<Version>0.0.3</Version>
+		<Version>0.1.0</Version>
 		<Authors>itsWindows11</Authors>
 		<Company>-</Company>
 		<RepositoryUrl>https://github.com/itsWindows11/NtfsReader</RepositoryUrl>
 		<IncludeSymbols>true</IncludeSymbols>
 		<SymbolPackageFormat>snupkg</SymbolPackageFormat>
 	    <PackageLicenseExpression>LGPL-2.1-or-later</PackageLicenseExpression>
+	    <PackageReleaseNotes>Bug fixes:
+- Fixed wrong file size (#2): node.Size now correctly reports DataSize from the $DATA attribute, matching FileInfo.Length for all regular files.
+- Fixed "No Bitmap Data" crash on small/newly-formatted NTFS volumes where the $BITMAP attribute of $MFT is resident. Added TryExtractResidentBitmapDataAt fallback.
+
+New features:
+- Added NtfsReader.CreateAsync(DriveInfo, RetrieveMode, CancellationToken): true async MFT read using FILE_FLAG_OVERLAPPED and RandomAccess.ReadAsync (net6+) / P/Invoke on netstandard2.0.
+- Added NtfsReader.EnumerateNodesAsync(DriveInfo, RetrieveMode, string, CancellationToken): IAsyncEnumerable streaming, available on all four TFMs including netstandard2.0 via Microsoft.Bcl.AsyncInterfaces.
+
+Performance and memory:
+- Fixed GetNodes race condition: List under Parallel.For replaced with ConcurrentBag.
+- BitmapMasks is now static readonly, one shared array instead of per-instance allocation.
+- SearchStream hot path uses a plain for loop instead of LINQ FirstOrDefault.
+- _driveRootPrefix cached once per reader instance, eliminating one TrimEnd allocation per node during GetNodes.
+- StringBuilder pre-sized from known prefix length and path depth.
+- ArrayPool used for the large MFT scan buffer (64 KB on XP, 256 KB on Vista+).
+
+Multi-targeting and language:
+- Library now targets netstandard2.0, net8.0, net9.0, and net10.0.
+- LangVersion bumped to C# 14 with PolySharp 1.15.0 polyfills on netstandard2.0 (private, not exposed to consumers).
+
+Other:
+- Solution migrated to .slnx format.
+- MSTest-based test suite (36 tests) covering MFT fixup, run-list decoding, resident $BITMAP extraction, async node count parity, and file-size accuracy.
+- CI: build and test matrix (ubuntu-latest/windows-latest x net8.0/net9.0/net10.0); NuGet publishing gated on all tests passing.</PackageReleaseNotes>
 	</PropertyGroup>
+
+	<!-- PolySharp provides compiler-synthesized polyfill types (e.g. CollectionBuilderAttribute,
+	     IsExternalInit, CallerArgumentExpressionAttribute) that are absent from the netstandard2.0
+	     runtime but required when using C# 14 language features.  PrivateAssets=all keeps it out of
+	     the NuGet dependency graph so consumers don't receive it. -->
+	<ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+		<PackageReference Include="PolySharp" Version="1.15.0"
+		                  PrivateAssets="all"
+		                  IncludeAssets="runtime;build;native;contentfiles;analyzers" />
+		<!-- System.Buffers provides ArrayPool<T> for netstandard2.0 (built-in for net8.0+).
+		     PrivateAssets=all keeps it out of consumers' NuGet dependency graph. -->
+		<PackageReference Include="System.Buffers" Version="4.5.1"
+		                  PrivateAssets="all" />
+		<!-- Microsoft.Bcl.AsyncInterfaces provides IAsyncEnumerable<T>, IAsyncEnumerator<T>,
+		     and the EnumeratorCancellationAttribute for netstandard2.0.  Built-in for net8.0+. -->
+		<PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+	</ItemGroup>
 </Project>

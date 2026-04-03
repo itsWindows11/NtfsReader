@@ -1,5 +1,5 @@
-﻿using System.Collections.Generic;
-using System.Linq;
+﻿using System.Buffers;
+using System.Collections.Generic;
 using Microsoft.Win32.SafeHandles;
 
 namespace System.IO.Filesystem.Ntfs;
@@ -9,7 +9,7 @@ public sealed partial class NtfsReader : IDisposable
     private const ulong VIRTUALFRAGMENT = ulong.MaxValue;
     private const uint ROOTDIRECTORY = 5;
 
-    private readonly byte[] BitmapMasks = [1, 2, 4, 8, 16, 32, 64, 128];
+    private static readonly byte[] BitmapMasks = [1, 2, 4, 8, 16, 32, 64, 128];
 
     internal SafeFileHandle _volumeHandle;
     internal DiskInfoWrapper _diskInfo;
@@ -17,7 +17,12 @@ public sealed partial class NtfsReader : IDisposable
     internal StandardInformation[] _standardInformations;
     internal Stream[][] _streams;
     internal DriveInfo _driveInfo;
-    internal List<string> _names = [];
+    // Cached drive root (e.g. "C:") used when building full node paths. Computed once
+    // after _driveInfo is set to avoid repeated TrimEnd allocations across GetNodes calls.
+    internal string _driveRootPrefix;
+    // Index 0 is reserved as the "no name" sentinel; GetNameFromIndex(0) returns null.
+    // Pre-seeding ensures the first real name starts at index 1, not 0.
+    internal List<string> _names = [null];
     internal RetrieveMode _retrieveMode;
     internal byte[] _bitmapData;
 
@@ -25,6 +30,11 @@ public sealed partial class NtfsReader : IDisposable
     //use ordinal comparison to improve performance
     //this will be deallocated once the MFT reading is finished
     private readonly Dictionary<string, int> _nameIndex = new(128 * 1024, StringComparer.Ordinal);
+
+    // Private constructor used exclusively by the async factory (CreateAsync).
+    // The public constructor drives synchronous initialization; this one leaves
+    // all fields at their defaults so InitializeAsync can set them.
+    private NtfsReader() { }
 
     /// <summary>
     /// Raised once the bitmap data has been read.
@@ -58,10 +68,20 @@ public sealed partial class NtfsReader : IDisposable
         => nameIndex == 0 ? null : _names[nameIndex];
 
     internal Stream SearchStream(List<Stream> streams, AttributeType streamType)
-        => streams.FirstOrDefault(s => s.Type == streamType);
+    {
+        for (int i = 0; i < streams.Count; i++)
+            if (streams[i].Type == streamType)
+                return streams[i];
+        return null;
+    }
 
     internal Stream SearchStream(List<Stream> streams, AttributeType streamType, int streamNameIndex)
-        => streams.FirstOrDefault(s => s.Type == streamType && s.NameIndex == streamNameIndex);
+    {
+        for (int i = 0; i < streams.Count; i++)
+            if (streams[i].Type == streamType && streams[i].NameIndex == streamNameIndex)
+                return streams[i];
+        return null;
+    }
 
     private unsafe void ReadFile(byte* buffer, int len, ulong absolutePosition) => ReadFile(buffer, (ulong)len, absolutePosition);
 
@@ -147,9 +167,19 @@ public sealed partial class NtfsReader : IDisposable
         byte[] volumeData = new byte[512];
 
         fixed (byte* ptr = volumeData)
-        {
             ReadFile(ptr, volumeData.Length, 0);
 
+        ParseBootSectorData(volumeData);
+    }
+
+    /// <summary>
+    /// Parses the raw 512-byte boot sector buffer and populates <see cref="_diskInfo"/>.
+    /// Shared between the synchronous and asynchronous initialization paths.
+    /// </summary>
+    private unsafe void ParseBootSectorData(byte[] volumeData)
+    {
+        fixed (byte* ptr = volumeData)
+        {
             BootSector* bootSector = (BootSector*)ptr;
 
             if (bootSector->Signature != 0x202020205346544E)
@@ -178,6 +208,37 @@ public sealed partial class NtfsReader : IDisposable
 
             _diskInfo = diskInfo;
         }
+    }
+
+    /// <summary>
+    /// Applies the Update Sequence Array fixup to a single MFT record stored at
+    /// <paramref name="recordOffset"/> bytes inside the managed <paramref name="buffer"/>.
+    /// Safe to call from async methods: the <c>fixed</c> block does not span any
+    /// <c>await</c> point.
+    /// </summary>
+    private unsafe void FixupRawMftdataAt(byte[] buffer, ulong recordOffset, ulong len)
+    {
+        fixed (byte* ptr = buffer)
+            FixupRawMftdata(ptr + recordOffset, len);
+    }
+
+    /// <summary>
+    /// Parses the MFT record at <paramref name="recordOffset"/> bytes inside the managed
+    /// <paramref name="buffer"/> and writes the result to <paramref name="node"/>.
+    /// Safe to call from async methods: the <c>fixed</c> block does not span any
+    /// <c>await</c> point.
+    /// </summary>
+    private unsafe bool ProcessMftRecordAt(
+        byte[] buffer,
+        ulong recordOffset,
+        ulong bufLen,
+        uint nodeIndex,
+        out Node node,
+        List<Stream> streams,
+        bool isMftNode)
+    {
+        fixed (byte* ptr = buffer)
+            return ProcessMftRecord(ptr + recordOffset, bufLen, nodeIndex, out node, streams, isMftNode);
     }
 
     /// <summary>
@@ -255,6 +316,90 @@ public sealed partial class NtfsReader : IDisposable
                 runOffsetBytes[i++] = 0xFF;
 
         return runOffset;
+    }
+
+    // ── Test helpers ──────────────────────────────────────────────────────────
+    // These thin wrappers bridge the unsafe byte* API to managed byte[] so that
+    // the NtfsReader.Tests project (granted access via InternalsVisibleTo) can
+    // exercise the run-list decoder without P/Invoke or unsafe reflection tricks.
+
+    /// <summary>Managed wrapper around <see cref="ProcessRunLength"/> for unit testing.</summary>
+    internal static unsafe long DecodeRunLength(byte[] runData, int runLengthSize, ref uint index)
+    {
+        fixed (byte* ptr = runData)
+            return ProcessRunLength(ptr, (uint)runData.Length, runLengthSize, ref index);
+    }
+
+    /// <summary>Managed wrapper around <see cref="ProcessRunOffset"/> for unit testing.</summary>
+    internal static unsafe long DecodeRunOffset(byte[] runData, int runOffsetSize, ref uint index)
+    {
+        fixed (byte* ptr = runData)
+            return ProcessRunOffset(ptr, (uint)runData.Length, runOffsetSize, ref index);
+    }
+
+    /// <summary>
+    /// Scans the attribute list of a raw MFT record buffer for a <b>resident</b>
+    /// <see cref="AttributeType.AttributeBitmap"/> and returns a copy of its embedded data,
+    /// or <see langword="null"/> when none is found.
+    /// </summary>
+    /// <remarks>
+    /// On small or newly-formatted volumes the <c>$BITMAP</c> of the <c>$MFT</c> inode can
+    /// fit entirely within the MFT record itself (resident attribute).  In that case the
+    /// bitmap data must be extracted directly — it has no run-list and therefore cannot be
+    /// read by the regular fragment-walking code in <see cref="ProcessBitmapData"/>.
+    /// </remarks>
+    private static unsafe byte[] TryExtractResidentBitmapData(byte* buffer, ulong recordLen)
+    {
+        FileRecordHeader* header = (FileRecordHeader*)buffer;
+        if (header->AttributeOffset >= recordLen)
+            return null;
+
+        byte* ptr = buffer + header->AttributeOffset;
+        ulong bufLen = recordLen - header->AttributeOffset;
+
+        Attribute* attribute = null;
+        for (uint offset = 0; offset < bufLen; offset += attribute->Length)
+        {
+            attribute = (Attribute*)(ptr + offset);
+
+            if ((offset + 4 <= bufLen) && (*(uint*)attribute == 0xFFFFFFFF))
+                break;
+
+            if ((offset + 4 > bufLen) || attribute->Length < 4 || (offset + attribute->Length > bufLen))
+                break;
+
+            if (attribute->Length == 0)
+                break;
+
+            if (attribute->AttributeType == AttributeType.AttributeBitmap && attribute->Nonresident == 0)
+            {
+                ResidentAttribute* res = (ResidentAttribute*)attribute;
+                byte* data = ptr + offset + res->ValueOffset;
+                uint dataLen = res->ValueLength;
+
+                if (dataLen == 0)
+                    return null;
+
+                byte[] result = new byte[dataLen];
+                for (uint i = 0; i < dataLen; i++)
+                    result[i] = data[i];
+
+                return result;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Managed-array wrapper around <see cref="TryExtractResidentBitmapData"/> safe to call
+    /// from async methods — the <c>fixed</c> block does not span any <see langword="await"/>
+    /// point.
+    /// </summary>
+    internal static unsafe byte[] TryExtractResidentBitmapDataAt(byte[] buffer, ulong recordLen)
+    {
+        fixed (byte* ptr = buffer)
+            return TryExtractResidentBitmapData(ptr, recordLen);
     }
 
     /// <summary>
@@ -410,7 +555,10 @@ public sealed partial class NtfsReader : IDisposable
                         break;
 
                     case AttributeType.AttributeData:
-                        node.Size = residentAttribute->ValueLength;
+                        // Only the unnamed (main) data stream represents the file's actual size.
+                        // Named attributes are Alternate Data Streams and must not overwrite the file size.
+                        if (attribute->NameLength == 0)
+                            node.Size = residentAttribute->ValueLength;
                         break;
                 }
             }
@@ -419,7 +567,10 @@ public sealed partial class NtfsReader : IDisposable
                 NonResidentAttribute* nonResidentAttribute = (NonResidentAttribute*)attribute;
 
                 //save the length (number of bytes) of the data.
-                if (attribute->AttributeType == AttributeType.AttributeData && node.Size == 0)
+                // Only the unnamed (main) data stream represents the file's actual size.
+                // The previous guard (node.Size == 0) was insufficient: a named ADS processed
+                // first would set a non-zero size and block the real file size from being stored.
+                if (attribute->AttributeType == AttributeType.AttributeData && attribute->NameLength == 0)
                     node.Size = nonResidentAttribute->DataSize;
 
                 if (streams != null)
@@ -493,8 +644,16 @@ public sealed partial class NtfsReader : IDisposable
         //    }
         //}
 
+        // When streams are being collected, ensure node.Size comes from the main (unnamed) data
+        // stream rather than blindly taking streams[0] which could be an Alternate Data Stream.
         if (streams != null && streams.Count > 0)
-            node.Size = streams[0].Size;
+        {
+            Stream mainStream = SearchStream(streams, AttributeType.AttributeData, 0);
+            if (mainStream != null)
+                node.Size = mainStream.Size;
+            else
+                node.Size = streams[0].Size;
+        }
     }
 
     //private unsafe void ProcessAttributeList(Node mftNode, Node node, byte* ptr, ulong bufLength, int depth, InterpretMode interpretMode)
@@ -760,8 +919,11 @@ public sealed partial class NtfsReader : IDisposable
         uint bufferSize =
             (Environment.OSVersion.Version.Major >= 6 ? 256u : 64u) * 1024;
 
-        byte[] data = new byte[bufferSize];
-
+        // Rent a buffer from the shared pool to avoid a large heap allocation.
+        // ArrayPool may return a larger array; always use bufferSize for sizing, not data.Length.
+        byte[] data = ArrayPool<byte>.Shared.Rent((int)bufferSize);
+        try
+        {
         fixed (byte* buffer = data)
         {
             //Read the $MFT record from disk into memory, which is always the first record in the MFT. 
@@ -778,9 +940,14 @@ public sealed partial class NtfsReader : IDisposable
             if (!ProcessMftRecord(buffer, _diskInfo.BytesPerMftRecord, 0, out Node mftNode, mftStreams, true))
                 throw new Exception("Can't interpret MFT Record");
 
-            //the bitmap data contains all used inodes on the disk
-            _bitmapData =
-                ProcessBitmapData(mftStreams);
+            // Handle both non-resident (common) and resident (small/new volumes) $MFT bitmap.
+            // On small volumes the $BITMAP attribute can be resident; there is no run-list so
+            // ProcessBitmapData would throw "No Bitmap Data".  Fall back to reading the bytes
+            // directly from the raw MFT record that is still in `buffer`.
+            _bitmapData = SearchStream(mftStreams, AttributeType.AttributeBitmap) != null
+                ? ProcessBitmapData(mftStreams)
+                : TryExtractResidentBitmapData(buffer, _diskInfo.BytesPerMftRecord)
+                  ?? throw new Exception("No Bitmap Data");
 
             OnBitmapDataAvailable();
 
@@ -835,8 +1002,16 @@ public sealed partial class NtfsReader : IDisposable
                     totalBytesRead += (BlockEnd - BlockStart) * _diskInfo.BytesPerMftRecord;
                 }
 
+                // ReadNextChunk bounds BlockEnd so that (nodeIndex - BlockStart) * BytesPerMftRecord
+                // stays within bufferSize.  Validate explicitly against the actual rented-array
+                // length (data.Length ≥ bufferSize) so that the pointer arithmetic below is
+                // demonstrably in-bounds for both the analyzer and the runtime.
+                ulong recordOffset = (nodeIndex - BlockStart) * _diskInfo.BytesPerMftRecord;
+                if (recordOffset + _diskInfo.BytesPerMftRecord > (ulong)data.Length)
+                    break;
+
                 FixupRawMftdata(
-                        buffer + (nodeIndex - BlockStart) * _diskInfo.BytesPerMftRecord,
+                        buffer + recordOffset,
                         _diskInfo.BytesPerMftRecord
                     );
 
@@ -845,7 +1020,7 @@ public sealed partial class NtfsReader : IDisposable
                     streams = [];
 
                 if (!ProcessMftRecord(
-                        buffer + (nodeIndex - BlockStart) * _diskInfo.BytesPerMftRecord,
+                        buffer + recordOffset,
                         _diskInfo.BytesPerMftRecord,
                         nodeIndex,
                         out Node newNode,
@@ -860,6 +1035,11 @@ public sealed partial class NtfsReader : IDisposable
             }
 
             return nodes;
+        }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(data);
         }
     }
 }

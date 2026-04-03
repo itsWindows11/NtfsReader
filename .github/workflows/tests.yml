@@ -1,0 +1,73 @@
+name: Tests
+
+on:
+  push:
+    branches: [ main, master, release, 'copilot/**' ]
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  # ── Build once ─────────────────────────────────────────────────────────────
+  # Builds all TFMs and uploads the compiled binaries so every test job can
+  # reuse them without rebuilding from scratch.  Packing happens in the
+  # separate Publish workflow only after all tests have passed.
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET (all TFMs)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.x
+            9.x
+            10.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          # Includes compiled DLLs for every TFM so test jobs can run --no-build.
+          path: src/**/bin/Release/
+
+  # ── Test matrix ────────────────────────────────────────────────────────────
+  # Downloads the pre-built binaries from the build job and runs the tests for
+  # each OS × TFM combination without recompiling.
+  test:
+    name: Test (${{ matrix.os }} / net${{ matrix.tfm }})
+    runs-on: ${{ matrix.os }}
+    needs: build
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        tfm: ['8.0', '9.0', '10.0']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET ${{ matrix.tfm }}
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ matrix.tfm }}
+
+      - name: Download build output
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: src
+
+      - name: Test
+        run: dotnet vstest src/NtfsReader.Tests/bin/Release/net${{ matrix.tfm }}/NtfsReader.Tests.dll --logger:"console;verbosity=detailed" --logger:GitHubActions

@@ -6,9 +6,14 @@ namespace System.IO.Filesystem.Ntfs;
 public partial class NtfsReader
 {
     /// <summary>
-    /// Recurse the node hierarchy and construct its entire name
-    /// stopping at the root directory.
+    /// Recursively walks the node hierarchy and returns the fully-qualified path of the node
+    /// identified by <paramref name="nodeIndex"/>, stopping when the root directory is reached.
     /// </summary>
+    /// <param name="nodeIndex">Zero-based index into the internal node array.</param>
+    /// <returns>The full path, e.g. <c>C:\Windows\System32\ntdll.dll</c>.</returns>
+    /// <exception cref="InvalidDataException">
+    /// A parent-child loop was detected, indicating MFT corruption.
+    /// </exception>
     internal string GetNodeFullNameCore(uint nodeIndex)
     {
         uint node = nodeIndex;
@@ -34,8 +39,9 @@ public partial class NtfsReader
             node = parent;
         }
 
-        StringBuilder fullPath = new StringBuilder();
-        fullPath.Append(_driveInfo.Name.TrimEnd(['\\']));
+        // Pre-size the builder: drive prefix + one backslash + estimated 40 chars per path segment.
+        StringBuilder fullPath = new StringBuilder(_driveRootPrefix.Length + fullPathNodes.Count * 40);
+        fullPath.Append(_driveRootPrefix);
 
         while (fullPathNodes.Count > 0)
         {
