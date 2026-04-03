@@ -39,8 +39,9 @@ public partial class NtfsReader
             node = parent;
         }
 
-        StringBuilder fullPath = new StringBuilder();
-        fullPath.Append(_driveInfo.Name.TrimEnd(['\\']));
+        // Pre-size the builder: drive prefix + one backslash + estimated 40 chars per path segment.
+        StringBuilder fullPath = new StringBuilder(_driveRootPrefix.Length + fullPathNodes.Count * 40);
+        fullPath.Append(_driveRootPrefix);
 
         while (fullPathNodes.Count > 0)
         {

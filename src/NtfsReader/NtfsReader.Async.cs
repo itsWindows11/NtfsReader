@@ -27,6 +27,7 @@ public sealed partial class NtfsReader
     {
         _driveInfo = driveInfo;
         _retrieveMode = retrieveMode;
+        _driveRootPrefix = _driveInfo.Name.TrimEnd(['\\']);
 
         var builder = new StringBuilder(1024);
         GetVolumeNameForVolumeMountPoint(_driveInfo.RootDirectory.Name, builder, builder.Capacity);

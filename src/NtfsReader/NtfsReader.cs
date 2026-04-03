@@ -16,6 +16,9 @@ public sealed partial class NtfsReader : IDisposable
     internal StandardInformation[] _standardInformations;
     internal Stream[][] _streams;
     internal DriveInfo _driveInfo;
+    // Cached drive root (e.g. "C:") used when building full node paths. Computed once
+    // after _driveInfo is set to avoid repeated TrimEnd allocations across GetNodes calls.
+    internal string _driveRootPrefix;
     // Index 0 is reserved as the "no name" sentinel; GetNameFromIndex(0) returns null.
     // Pre-seeding ensures the first real name starts at index 1, not 0.
     internal List<string> _names = [null];
