@@ -71,4 +71,4 @@ jobs:
           path: src
 
       - name: Test
-        run: dotnet test src/NtfsReader.Tests/NtfsReader.Tests.csproj --no-build -c Release --framework net${{ matrix.tfm }} --logger "console;verbosity=detailed" --logger GitHubActions
+        run: dotnet vstest src/NtfsReader.Tests/bin/Release/net${{ matrix.tfm }}/NtfsReader.Tests.dll --logger:"console;verbosity=detailed" --logger:GitHubActions
