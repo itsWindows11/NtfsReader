@@ -11,10 +11,11 @@ permissions:
 
 jobs:
   # ── Build once ─────────────────────────────────────────────────────────────
-  # Builds all TFMs, packs the NuGet package, and uploads the outputs so every
-  # test job can reuse the compiled binaries without rebuilding from scratch.
+  # Builds all TFMs and uploads the compiled binaries so every test job can
+  # reuse them without rebuilding from scratch.  Packing happens in the
+  # separate Publish workflow only after all tests have passed.
   build:
-    name: Build & Pack
+    name: Build
     runs-on: ubuntu-latest
 
     steps:
@@ -34,21 +35,12 @@ jobs:
       - name: Build
         run: dotnet build --no-restore -c Release
 
-      - name: Pack NuGet
-        run: dotnet pack src/NtfsReader/NtfsReader.csproj --no-build -c Release -o nupkgs
-
       - name: Upload build output
         uses: actions/upload-artifact@v4
         with:
           name: build-output
           # Includes compiled DLLs for every TFM so test jobs can run --no-build.
           path: src/**/bin/Release/
-
-      - name: Upload NuGet packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: nupkgs
-          path: nupkgs/
 
   # ── Test matrix ────────────────────────────────────────────────────────────
   # Downloads the pre-built binaries from the build job and runs the tests for
