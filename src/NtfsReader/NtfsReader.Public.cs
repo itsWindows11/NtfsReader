@@ -1,28 +1,52 @@
 ﻿using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
+
+[assembly: InternalsVisibleTo("NtfsReader.Tests")]
 
 namespace System.IO.Filesystem.Ntfs;
 
 /// <summary>
-/// Ntfs metadata reader.
-/// 
-/// This class is used to get files & directories information of an NTFS volume.
-/// This is a lot faster than using conventional directory browsing method
-/// particularly when browsing really big directories.
+/// Reads the Master File Table (MFT) of an NTFS volume and exposes its entries as a
+/// queryable collection of <see cref="INode"/> objects.
 /// </summary>
-/// <remarks>Admnistrator rights are required in order to use this method.</remarks>
+/// <remarks>
+/// <para>
+/// Reading the MFT is orders of magnitude faster than conventional directory enumeration
+/// (e.g. <see cref="System.IO.Directory.EnumerateFiles"/>), making this library ideal for
+/// volume-wide searches, disk analysis tools, and file-indexing scenarios.
+/// </para>
+/// <para>
+/// The caller must have <b>Administrator</b> privileges; otherwise the underlying
+/// volume handle cannot be opened and an <see cref="IOException"/> is thrown.
+/// </para>
+/// <para>
+/// Use <see cref="CreateAsync"/> to avoid blocking the calling thread during the
+/// (potentially multi-second) MFT scan on large volumes.
+/// </para>
+/// </remarks>
 public sealed partial class NtfsReader
 {
     /// <summary>
-    /// NtfsReader constructor.
+    /// Initializes an <see cref="NtfsReader"/> and synchronously reads the entire MFT.
     /// </summary>
-    /// <param name="driveInfo">The drive you want to read metadata from.</param>
-    /// <param name="include">Information to retrieve from each node while scanning the disk</param>
-    /// <remarks>Streams & Fragments are expensive to store in memory, if you don't need them, don't retrieve them.</remarks>
+    /// <param name="driveInfo">The NTFS drive to read. Must not be <see langword="null"/>.</param>
+    /// <param name="retrieveMode">
+    /// Flags that control which optional metadata is loaded into memory.
+    /// Prefer <see cref="RetrieveMode.Minimal"/> when only names and sizes are needed, as
+    /// <see cref="RetrieveMode.Streams"/> and <see cref="RetrieveMode.Fragments"/> each add
+    /// significant memory overhead on volumes with millions of files.
+    /// </param>
+    /// <exception cref="ArgumentNullException"><paramref name="driveInfo"/> is <see langword="null"/>.</exception>
+    /// <exception cref="IOException">
+    /// The volume could not be opened — the drive may not exist, may not be NTFS, or the
+    /// process lacks Administrator privileges.
+    /// </exception>
     public NtfsReader(DriveInfo driveInfo, RetrieveMode retrieveMode)
     {
-        _driveInfo = driveInfo ?? throw new ArgumentNullException("driveInfo");
+        _driveInfo = driveInfo ?? throw new ArgumentNullException(nameof(driveInfo));
         _retrieveMode = retrieveMode;
 
         var builder = new StringBuilder(1024);
@@ -49,7 +73,6 @@ public sealed partial class NtfsReader
                 )
             );
 
-        // TODO: Move this code to a separate async method.
         using (_volumeHandle)
         {
             InitializeDiskInfo();
@@ -62,16 +85,62 @@ public sealed partial class NtfsReader
         GC.Collect();
     }
 
+    /// <summary>
+    /// Creates an <see cref="NtfsReader"/> asynchronously, offloading the blocking MFT scan
+    /// to a thread-pool thread so the calling thread remains responsive.
+    /// </summary>
+    /// <param name="driveInfo">The NTFS drive to read. Must not be <see langword="null"/>.</param>
+    /// <param name="retrieveMode">
+    /// Flags that control which optional metadata is loaded into memory.
+    /// </param>
+    /// <param name="cancellationToken">
+    /// A token that can cancel the operation before the thread-pool work item starts.
+    /// Note that once the MFT scan begins it cannot be interrupted mid-scan.
+    /// </param>
+    /// <returns>
+    /// A <see cref="Task{NtfsReader}"/> that completes when the MFT has been fully read.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// NTFS raw-volume I/O on Windows is inherently synchronous at the kernel level when
+    /// accessed via <c>CreateFile</c> without <c>FILE_FLAG_OVERLAPPED</c>. The most practical
+    /// way to expose an async-friendly API on .NET Standard 2.0 — without sacrificing
+    /// correctness or cross-runtime compatibility — is therefore to offload the scan to a
+    /// dedicated thread-pool thread via <see cref="Task.Run{TResult}(Func{TResult}, CancellationToken)"/>.
+    /// This frees the calling (e.g. UI or ASP.NET) thread for the duration of the scan.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentNullException"><paramref name="driveInfo"/> is <see langword="null"/>.</exception>
+    /// <exception cref="IOException">
+    /// The volume could not be opened — the drive may not exist, may not be NTFS, or the
+    /// process lacks Administrator privileges.
+    /// </exception>
+    /// <exception cref="OperationCanceledException">
+    /// <paramref name="cancellationToken"/> was cancelled before the scan started.
+    /// </exception>
+    public static Task<NtfsReader> CreateAsync(
+        DriveInfo driveInfo,
+        RetrieveMode retrieveMode,
+        CancellationToken cancellationToken = default)
+        => Task.Run(() => new NtfsReader(driveInfo, retrieveMode), cancellationToken);
+
+    /// <summary>
+    /// Gets geometry and layout information for the scanned volume.
+    /// </summary>
     public IDiskInfo DiskInfo => _diskInfo;
 
     /// <summary>
-    /// Get all nodes under the specified rootPath.
+    /// Returns all nodes (files and directories) whose full path starts with
+    /// <paramref name="rootPath"/>.
     /// </summary>
     /// <param name="rootPath">
-    /// The rootPath must at least contain the drive
-    /// and may include any number of subdirectories.
-    /// Wildcards aren't supported.
+    /// The path prefix to filter by — must at minimum contain the drive letter
+    /// (e.g. <c>"C:\\"</c>). Subdirectories may be appended to narrow the result.
+    /// Wildcards are not supported.
     /// </param>
+    /// <returns>
+    /// A <see cref="List{INode}"/> populated in parallel; order is non-deterministic.
+    /// </returns>
     public List<INode> GetNodes(string rootPath)
     {
         var nodes = new List<INode>();
@@ -88,8 +157,14 @@ public sealed partial class NtfsReader
         return nodes;
     }
 
+    /// <summary>
+    /// Returns the raw volume bitmap that indicates which clusters are in use.
+    /// Each bit corresponds to one cluster; a set bit means the cluster is allocated.
+    /// </summary>
+    /// <returns>A byte array representing the volume bitmap.</returns>
     public byte[] GetVolumeBitmap() => _bitmapData;
 
+    /// <inheritdoc/>
     public void Dispose()
     {
         _volumeHandle?.Dispose();

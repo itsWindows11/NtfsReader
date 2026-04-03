@@ -17,7 +17,9 @@ public sealed partial class NtfsReader : IDisposable
     internal StandardInformation[] _standardInformations;
     internal Stream[][] _streams;
     internal DriveInfo _driveInfo;
-    internal List<string> _names = [];
+    // Index 0 is reserved as the "no name" sentinel; GetNameFromIndex(0) returns null.
+    // Pre-seeding ensures the first real name starts at index 1, not 0.
+    internal List<string> _names = [null];
     internal RetrieveMode _retrieveMode;
     internal byte[] _bitmapData;
 
@@ -410,7 +412,10 @@ public sealed partial class NtfsReader : IDisposable
                         break;
 
                     case AttributeType.AttributeData:
-                        node.Size = residentAttribute->ValueLength;
+                        // Only the unnamed (main) data stream represents the file's actual size.
+                        // Named attributes are Alternate Data Streams and must not overwrite the file size.
+                        if (attribute->NameLength == 0)
+                            node.Size = residentAttribute->ValueLength;
                         break;
                 }
             }
@@ -419,7 +424,10 @@ public sealed partial class NtfsReader : IDisposable
                 NonResidentAttribute* nonResidentAttribute = (NonResidentAttribute*)attribute;
 
                 //save the length (number of bytes) of the data.
-                if (attribute->AttributeType == AttributeType.AttributeData && node.Size == 0)
+                // Only the unnamed (main) data stream represents the file's actual size.
+                // The previous guard (node.Size == 0) was insufficient: a named ADS processed
+                // first would set a non-zero size and block the real file size from being stored.
+                if (attribute->AttributeType == AttributeType.AttributeData && attribute->NameLength == 0)
                     node.Size = nonResidentAttribute->DataSize;
 
                 if (streams != null)
@@ -493,8 +501,16 @@ public sealed partial class NtfsReader : IDisposable
         //    }
         //}
 
+        // When streams are being collected, ensure node.Size comes from the main (unnamed) data
+        // stream rather than blindly taking streams[0] which could be an Alternate Data Stream.
         if (streams != null && streams.Count > 0)
-            node.Size = streams[0].Size;
+        {
+            Stream mainStream = SearchStream(streams, AttributeType.AttributeData, 0);
+            if (mainStream != null)
+                node.Size = mainStream.Size;
+            else
+                node.Size = streams[0].Size;
+        }
     }
 
     //private unsafe void ProcessAttributeList(Node mftNode, Node node, byte* ptr, ulong bufLength, int depth, InterpretMode interpretMode)
