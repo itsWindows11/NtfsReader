@@ -32,72 +32,7 @@ jobs:
             9.x
             10.x
 
-      - name: Check package version bump
-        id: version
-        shell: pwsh
-        run: |
-          $csprojPath = 'src/NtfsReader/NtfsReader.csproj'
-          [xml]$current = Get-Content -Raw $csprojPath
-
-          $packageId = $current.Project.PropertyGroup.PackageId
-          $currentVersion = $current.Project.PropertyGroup.Version
-
-          if ([string]::IsNullOrWhiteSpace($packageId) -or [string]::IsNullOrWhiteSpace($currentVersion)) {
-            throw "PackageId/Version could not be read from $csprojPath"
-          }
-
-          Write-Host "Current package: $packageId $currentVersion"
-
-          $publish = $true
-
-          $hasParent = $false
-          git rev-parse HEAD~1 *> $null
-          if ($LASTEXITCODE -eq 0) { $hasParent = $true }
-
-          if ($hasParent) {
-            $previousCsproj = git show "HEAD~1:$csprojPath"
-            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($previousCsproj)) {
-              [xml]$previous = $previousCsproj
-              $previousVersion = $previous.Project.PropertyGroup.Version
-
-              if (-not [string]::IsNullOrWhiteSpace($previousVersion)) {
-                Write-Host "Previous version: $previousVersion"
-                try {
-                  if ([version]$currentVersion -le [version]$previousVersion) {
-                    Write-Host "Version was not incremented. Skipping publish."
-                    $publish = $false
-                  }
-                }
-                catch {
-                  if ($currentVersion -eq $previousVersion) {
-                    Write-Host "Version was not changed. Skipping publish."
-                    $publish = $false
-                  }
-                }
-              }
-            }
-          }
-
-          $flatContainerId = $packageId.ToLowerInvariant()
-          $indexUrl = "https://api.nuget.org/v3-flatcontainer/$flatContainerId/index.json"
-
-          try {
-            $index = Invoke-RestMethod -Uri $indexUrl -Method Get
-            if ($index.versions -contains $currentVersion) {
-              Write-Host "Version already exists on NuGet. Skipping publish."
-              $publish = $false
-            }
-          }
-          catch {
-            Write-Host "Package not found on NuGet yet, or index query failed. Continuing with publish check."
-          }
-
-          "package_id=$packageId" >> $env:GITHUB_OUTPUT
-          "package_version=$currentVersion" >> $env:GITHUB_OUTPUT
-          "should_publish=$($publish.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
-
       - name: Verify NUGET_API_KEY secret
-        if: steps.version.outputs.should_publish == 'true'
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
@@ -107,19 +42,15 @@ jobs:
           fi
 
       - name: Restore
-        if: steps.version.outputs.should_publish == 'true'
         run: dotnet restore
 
       - name: Build
-        if: steps.version.outputs.should_publish == 'true'
         run: dotnet build --no-restore -c Release
 
       - name: Pack NuGet
-        if: steps.version.outputs.should_publish == 'true'
         run: dotnet pack src/NtfsReader/NtfsReader.csproj --no-build -c Release -o nupkgs
 
       - name: Push to NuGet
-        if: steps.version.outputs.should_publish == 'true'
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
         run: |
@@ -133,5 +64,4 @@ jobs:
             --skip-duplicate
 
       - name: Publish skipped
-        if: steps.version.outputs.should_publish != 'true'
-        run: echo "Skipping publish because version did not increase or already exists on NuGet."
+        run: echo "Skipping publish because version did not increase."
