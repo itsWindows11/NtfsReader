@@ -4,9 +4,7 @@
     <Platform Name="x64" />
     <Platform Name="x86" />
   </Configurations>
-  <Folder Name="/src/">
-    <Project Path="src/NtfsReader.Tests/NtfsReader.Tests.csproj" />
-  </Folder>
+  <Project Path="src/NtfsReader.Tests/NtfsReader.Tests.csproj" />
   <Project Path="src/NtfsReader.Sample/NtfsReader.Sample.csproj" />
   <Project Path="src/NtfsReader/NtfsReader.csproj" />
 </Solution>
