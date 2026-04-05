@@ -2,7 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [ main, master, release, 'copilot/**' ]
+    branches: [ main, master, 'copilot/**' ]
 
 permissions:
   contents: read

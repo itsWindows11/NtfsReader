@@ -1,0 +1,137 @@
+name: NuGet Publish
+
+on:
+  workflow_run:
+    workflows: ["Tests"]
+    types: [completed]
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Pack & Publish to NuGet
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' || github.event_name == 'release' }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 2
+
+      - name: Setup .NET (all TFMs)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.x
+            9.x
+            10.x
+
+      - name: Check package version bump
+        id: version
+        shell: pwsh
+        run: |
+          $csprojPath = 'src/NtfsReader/NtfsReader.csproj'
+          [xml]$current = Get-Content -Raw $csprojPath
+
+          $packageId = $current.Project.PropertyGroup.PackageId
+          $currentVersion = $current.Project.PropertyGroup.Version
+
+          if ([string]::IsNullOrWhiteSpace($packageId) -or [string]::IsNullOrWhiteSpace($currentVersion)) {
+            throw "PackageId/Version could not be read from $csprojPath"
+          }
+
+          Write-Host "Current package: $packageId $currentVersion"
+
+          $publish = $true
+
+          $hasParent = $false
+          git rev-parse HEAD~1 *> $null
+          if ($LASTEXITCODE -eq 0) { $hasParent = $true }
+
+          if ($hasParent) {
+            $previousCsproj = git show "HEAD~1:$csprojPath"
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($previousCsproj)) {
+              [xml]$previous = $previousCsproj
+              $previousVersion = $previous.Project.PropertyGroup.Version
+
+              if (-not [string]::IsNullOrWhiteSpace($previousVersion)) {
+                Write-Host "Previous version: $previousVersion"
+                try {
+                  if ([version]$currentVersion -le [version]$previousVersion) {
+                    Write-Host "Version was not incremented. Skipping publish."
+                    $publish = $false
+                  }
+                }
+                catch {
+                  if ($currentVersion -eq $previousVersion) {
+                    Write-Host "Version was not changed. Skipping publish."
+                    $publish = $false
+                  }
+                }
+              }
+            }
+          }
+
+          $flatContainerId = $packageId.ToLowerInvariant()
+          $indexUrl = "https://api.nuget.org/v3-flatcontainer/$flatContainerId/index.json"
+
+          try {
+            $index = Invoke-RestMethod -Uri $indexUrl -Method Get
+            if ($index.versions -contains $currentVersion) {
+              Write-Host "Version already exists on NuGet. Skipping publish."
+              $publish = $false
+            }
+          }
+          catch {
+            Write-Host "Package not found on NuGet yet, or index query failed. Continuing with publish check."
+          }
+
+          "package_id=$packageId" >> $env:GITHUB_OUTPUT
+          "package_version=$currentVersion" >> $env:GITHUB_OUTPUT
+          "should_publish=$($publish.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
+      - name: Verify NUGET_API_KEY secret
+        if: steps.version.outputs.should_publish == 'true'
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [ -z "$NUGET_API_KEY" ]; then
+            echo "::error::NUGET_API_KEY secret is not set. Add a valid NuGet.org API key under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+      - name: Restore
+        if: steps.version.outputs.should_publish == 'true'
+        run: dotnet restore
+
+      - name: Build
+        if: steps.version.outputs.should_publish == 'true'
+        run: dotnet build --no-restore -c Release
+
+      - name: Pack NuGet
+        if: steps.version.outputs.should_publish == 'true'
+        run: dotnet pack src/NtfsReader/NtfsReader.csproj --no-build -c Release -o nupkgs
+
+      - name: Push to NuGet
+        if: steps.version.outputs.should_publish == 'true'
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          dotnet nuget push nupkgs/*.nupkg \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+          dotnet nuget push nupkgs/*.snupkg \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - name: Publish skipped
+        if: steps.version.outputs.should_publish != 'true'
+        run: echo "Skipping publish because version did not increase or already exists on NuGet."
